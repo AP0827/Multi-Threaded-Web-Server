@@ -16,8 +16,8 @@ func worker(id int, jobs <-chan Job) {
 	}
 }
 
-func StartWorkerPool(numWorkers int, job chan Job) {
+func StartWorkerPool(numWorkers int, jobs chan Job) {
 	for i := 0; i < numWorkers; i++ {
-		go worker(i, job)
+		go worker(i, jobs)
 	}
 }

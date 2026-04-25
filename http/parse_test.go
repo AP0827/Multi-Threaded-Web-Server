@@ -14,20 +14,20 @@ func TestParseRequestGET(t *testing.T) {
 		t.Fatalf("expected no error, got %v", err)
 	}
 
-	if req.Method != "GET" {
-		t.Fatalf("expected method GET, got %q", req.Method)
+	if req.Method() != "GET" {
+		t.Fatalf("expected method GET, got %q", req.Method())
 	}
-	if req.path != "/" {
-		t.Fatalf("expected path /, got %q", req.path)
+	if req.Path() != "/" {
+		t.Fatalf("expected path /, got %q", req.Path())
 	}
-	if req.version != "HTTP/1.1" {
-		t.Fatalf("expected version HTTP/1.1, got %q", req.version)
+	if req.Version() != "HTTP/1.1" {
+		t.Fatalf("expected version HTTP/1.1, got %q", req.Version())
 	}
-	if got := req.headers["Host"]; got != "localhost" {
+	if got := req.Headers()["Host"]; got != "localhost" {
 		t.Fatalf("expected Host localhost, got %q", got)
 	}
-	if len(req.body) != 0 {
-		t.Fatalf("expected empty body, got %d bytes", len(req.body))
+	if len(req.Body()) != 0 {
+		t.Fatalf("expected empty body, got %d bytes", len(req.Body()))
 	}
 }
 
@@ -39,14 +39,14 @@ func TestParseRequestPOSTWithBody(t *testing.T) {
 		t.Fatalf("expected no error, got %v", err)
 	}
 
-	if req.Method != "POST" {
-		t.Fatalf("expected method POST, got %q", req.Method)
+	if req.Method() != "POST" {
+		t.Fatalf("expected method POST, got %q", req.Method())
 	}
-	if req.path != "/api" {
-		t.Fatalf("expected path /api, got %q", req.path)
+	if req.Path() != "/api" {
+		t.Fatalf("expected path /api, got %q", req.Path())
 	}
-	if string(req.body) != "hello" {
-		t.Fatalf("expected body hello, got %q", string(req.body))
+	if req.Body() != "hello" {
+		t.Fatalf("expected body hello, got %q", req.Body())
 	}
 }
 

@@ -37,7 +37,7 @@ func parseRequest(reader *bufio.Reader) (*Request, error) {
 	}
 
 	req := &Request{
-		Method:  parts[0],
+		method:  parts[0],
 		path:    parts[1],
 		version: parts[2],
 		headers: make(map[string]string),
