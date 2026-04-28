@@ -1,0 +1,4 @@
+GET /search?q=UNION%09SELECT HTTP/1.1
+Host: localhost
+Connection: close
+

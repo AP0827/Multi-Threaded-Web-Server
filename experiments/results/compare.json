@@ -1,0 +1,80 @@
+{
+  "generated_at": "2026-04-28T15:11:05.6728832Z",
+  "mtws_addr": "127.0.0.1:8080",
+  "proxy_addr": "127.0.0.1:8081",
+  "payload_dir": "experiments/payloads",
+  "results": [
+    {
+      "payload": "001-benign-health.http",
+      "mtws": {
+        "status_code": 200,
+        "status_line": "HTTP/1.1 200 OK"
+      },
+      "proxy": {
+        "status_code": 200,
+        "status_line": "HTTP/1.1 200 OK"
+      },
+      "divergence": "no"
+    },
+    {
+      "payload": "010-uri-union-select-encoded.http",
+      "mtws": {
+        "status_code": 403,
+        "status_line": "HTTP/1.1 403 Forbidden"
+      },
+      "proxy": {
+        "status_code": 403,
+        "status_line": "HTTP/1.1 403 Forbidden"
+      },
+      "divergence": "no"
+    },
+    {
+      "payload": "020-header-script.http",
+      "mtws": {
+        "status_code": 403,
+        "status_line": "HTTP/1.1 403 Forbidden"
+      },
+      "proxy": {
+        "status_code": 403,
+        "status_line": "HTTP/1.1 403 Forbidden"
+      },
+      "divergence": "no"
+    },
+    {
+      "payload": "030-uri-traversal.http",
+      "mtws": {
+        "status_code": 403,
+        "status_line": "HTTP/1.1 403 Forbidden"
+      },
+      "proxy": {
+        "status_code": 400,
+        "status_line": "HTTP/1.1 400 Bad Request"
+      },
+      "divergence": "yes"
+    },
+    {
+      "payload": "040-obs-fold-header.http",
+      "mtws": {
+        "status_code": 400,
+        "status_line": "HTTP/1.1 400 Bad Request"
+      },
+      "proxy": {
+        "status_code": 400,
+        "status_line": "HTTP/1.1 400 Bad Request"
+      },
+      "divergence": "no"
+    },
+    {
+      "payload": "050-duplicate-content-length.http",
+      "mtws": {
+        "status_code": 400,
+        "status_line": "HTTP/1.1 400 Bad Request"
+      },
+      "proxy": {
+        "status_code": 400,
+        "status_line": "HTTP/1.1 400 Bad Request"
+      },
+      "divergence": "no"
+    }
+  ]
+}

@@ -26,12 +26,12 @@ func HandleConnection(conn net.Conn, router *Router) {
 	if err != nil {
 		var securityErr *mtwshttp.SecurityError
 		if errors.As(err, &securityErr) {
-			log.Printf("WAF blocked request from %s: field=%s pattern=%q", conn.RemoteAddr(), securityErr.Field, securityErr.Pattern)
+			logSecurityEvent(conn, securityErr.Field, securityErr.Pattern, securityErr.RuleID, StatusForbidden.Code)
 			writeErrorResponse(conn, "HTTP/1.1", StatusForbidden)
 			return
 		}
 
-		log.Println("Parse error:", err)
+		logParseReject(conn, err.Error(), StatusBadRequest.Code)
 		writeErrorResponse(conn, "HTTP/1.1", StatusBadRequest)
 		return
 	}

@@ -1,0 +1,30 @@
+# SQL injection
+union select
+select * from
+information_schema
+drop table
+sleep(
+benchmark(
+' or 1=1
+" or 1=1
+
+# XSS
+<script
+</script
+javascript:
+onerror=
+onload=
+
+# Path traversal
+../
+..\
+/etc/passwd
+
+# Command execution indicators
+cmd.exe
+/bin/sh
+powershell -
+
+# SSRF metadata endpoints
+169.254.169.254
+metadata.google.internal

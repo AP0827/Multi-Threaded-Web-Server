@@ -104,3 +104,41 @@ func TestHandleConnectionBlocksMaliciousRequest(t *testing.T) {
 		t.Fatalf("expected 403 response, got %q", response)
 	}
 }
+
+func TestHandleConnectionRoutesRequestWithQueryString(t *testing.T) {
+	serverConn, clientConn := net.Pipe()
+	defer clientConn.Close()
+
+	router := NewRouter()
+	router.Handle("/search", func(w *ResponseWriter, req *mtwshttp.Request) {
+		if err := w.WriteText(StatusOK, "matched\n"); err != nil {
+			t.Fatalf("write response: %v", err)
+		}
+	})
+
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		HandleConnection(serverConn, router)
+	}()
+
+	rawRequest := "GET /search?q=harmless HTTP/1.1\r\nHost: localhost\r\n\r\n"
+	if _, err := clientConn.Write([]byte(rawRequest)); err != nil {
+		t.Fatalf("write request: %v", err)
+	}
+
+	responseBytes, err := io.ReadAll(clientConn)
+	if err != nil {
+		t.Fatalf("read response: %v", err)
+	}
+
+	<-done
+
+	response := string(responseBytes)
+	if !strings.Contains(response, "HTTP/1.1 200 OK") {
+		t.Fatalf("expected 200 OK response, got %q", response)
+	}
+	if !strings.HasSuffix(response, "matched\n") {
+		t.Fatalf("expected body matched, got %q", response)
+	}
+}

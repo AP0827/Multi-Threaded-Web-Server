@@ -26,6 +26,7 @@ WORKDIR /app
 ARG BIN_NAME=app
 
 COPY --from=build /out/${BIN_NAME} /usr/local/bin/app
+COPY security/waf/default-policy.txt /etc/mtws/waf-policy.txt
 
 EXPOSE 8080
 

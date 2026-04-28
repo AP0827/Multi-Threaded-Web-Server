@@ -1,0 +1,10 @@
+POST /submit HTTP/1.1
+Host: localhost
+Transfer-Encoding: chunked
+Connection: close
+
+5
+hello
+0
+X-Trailer: <script>alert(1)</script>
+

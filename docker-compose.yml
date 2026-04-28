@@ -7,6 +7,8 @@ services:
         APP_PATH: ./cmd/server
         BIN_NAME: mtws
     container_name: mtws-app
+    environment:
+      MTWS_WAF_POLICY_FILE: /etc/mtws/waf-policy.txt
     healthcheck:
       test: ["CMD", "wget", "-qO-", "http://127.0.0.1:8080/health"]
       interval: 10s

@@ -1,0 +1,21 @@
+{
+  "generated_at": "2026-04-28T15:34:46.2767281Z",
+  "url": "http://127.0.0.1:8080/health",
+  "requests": 200,
+  "concurrency": 10,
+  "keep_alive": false,
+  "elapsed": "392.2424ms",
+  "throughput": 509.88878305863926,
+  "errors": 0,
+  "status_codes": {
+    "200": 200
+  },
+  "latency": {
+    "average": "19.193799ms",
+    "min": "4.3335ms",
+    "p50": "13.1532ms",
+    "p95": "49.8216ms",
+    "p99": "99.5307ms",
+    "max": "106.6753ms"
+  }
+}

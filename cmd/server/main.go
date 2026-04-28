@@ -6,11 +6,11 @@ import (
 	mtwshttp "MTWS/http"
 	"MTWS/pool"
 	"MTWS/security/ratelimiter"
+	"fmt"
 	"log"
 	"net"
+	"strings"
 )
-
-var limiter = ratelimiter.New(config.RateLimitRate, config.RateLimitCapacity)
 
 func main() {
 	l, err := net.Listen("tcp", config.ServerAddress)
@@ -23,8 +23,15 @@ func main() {
 	jobs := make(chan pool.Job, config.JobQueueSize)
 	pool.StartWorkerPool(config.WorkerPoolSize, jobs)
 	router := buildRouter()
+	limiter := ratelimiter.New(config.RateLimitRate(), config.RateLimitCapacity())
+	rateLimitEnabled := config.RateLimitEnabled()
 
 	log.Println("Server running on port:8080!")
+	if rateLimitEnabled {
+		log.Printf("Rate limiter enabled: rate=%.2f capacity=%.2f", config.RateLimitRate(), config.RateLimitCapacity())
+	} else {
+		log.Println("Rate limiter disabled by environment")
+	}
 
 	for {
 		conn, err := l.Accept()
@@ -39,7 +46,7 @@ func main() {
 			clientIP = remoteAddr
 		}
 
-		if limiter.Allow(clientIP) {
+		if !rateLimitEnabled || limiter.Allow(clientIP) {
 			jobs <- pool.Job{Conn: conn, Router: router}
 			continue
 		}
@@ -64,6 +71,21 @@ func buildRouter() *core.Router {
 
 	router.Handle("/health", func(w *core.ResponseWriter, req *mtwshttp.Request) {
 		body := "ok\n"
+		if err := w.WriteText(core.StatusOK, body); err != nil {
+			log.Println("Write error:", err)
+		}
+	})
+
+	router.Handle("/submit", func(w *core.ResponseWriter, req *mtwshttp.Request) {
+		body := "MTWS baseline server is running\n"
+		if err := w.WriteText(core.StatusOK, body); err != nil {
+			log.Println("Write error:", err)
+		}
+	})
+
+	router.Handle("/search", func(w *core.ResponseWriter, req *mtwshttp.Request) {
+		_, query, _ := strings.Cut(req.Path(), "?")
+		body := fmt.Sprintf("query=%s\n", query)
 		if err := w.WriteText(core.StatusOK, body); err != nil {
 			log.Println("Write error:", err)
 		}

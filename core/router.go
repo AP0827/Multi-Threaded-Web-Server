@@ -1,6 +1,9 @@
 package core
 
-import mtwshttp "MTWS/http"
+import (
+	mtwshttp "MTWS/http"
+	"strings"
+)
 
 type HandlerFunc func(*ResponseWriter, *mtwshttp.Request)
 
@@ -27,7 +30,8 @@ func (r *Router) ServeHTTP(w *ResponseWriter, req *mtwshttp.Request) {
 		return
 	}
 
-	handler, ok := r.routes[req.Path()]
+	path, _, _ := strings.Cut(req.Path(), "?")
+	handler, ok := r.routes[path]
 	if !ok {
 		writeErrorResponse(w.conn, req.Version(), StatusNotFound)
 		return

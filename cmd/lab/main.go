@@ -35,6 +35,11 @@ func main() {
 			fmt.Fprintln(os.Stderr, "benchmark error:", err)
 			os.Exit(1)
 		}
+	case "summarize":
+		if err := runSummarize(os.Args[2:]); err != nil {
+			fmt.Fprintln(os.Stderr, "summarize error:", err)
+			os.Exit(1)
+		}
 	default:
 		printUsage()
 		os.Exit(2)
@@ -45,6 +50,7 @@ func printUsage() {
 	fmt.Println("Usage:")
 	fmt.Println("  go run ./cmd/lab compare -mtws 127.0.0.1:8080 -proxy 127.0.0.1:8081")
 	fmt.Println("  go run ./cmd/lab benchmark -url http://127.0.0.1:8080/health -requests 200 -concurrency 10")
+	fmt.Println("  go run ./cmd/lab summarize -glob \"experiments/results/benchmark-*.json\"")
 }
 
 func runCompare(args []string) error {
@@ -109,6 +115,7 @@ func runBenchmark(args []string) error {
 	requests := fs.Int("requests", 200, "total number of requests")
 	concurrency := fs.Int("concurrency", 10, "number of concurrent workers")
 	timeout := fs.Duration("timeout", 5*time.Second, "per-request timeout")
+	keepAlive := fs.Bool("keepalive", false, "reuse HTTP connections during benchmarking")
 	jsonOut := fs.String("json-out", "", "optional file path for JSON results")
 	if err := fs.Parse(args); err != nil {
 		return err
@@ -128,7 +135,7 @@ func runBenchmark(args []string) error {
 	client := &http.Client{
 		Timeout: *timeout,
 		Transport: &http.Transport{
-			DisableKeepAlives: true,
+			DisableKeepAlives: !*keepAlive,
 		},
 	}
 
@@ -175,6 +182,7 @@ func runBenchmark(args []string) error {
 	fmt.Printf("URL: %s\n", *targetURL)
 	fmt.Printf("Requests: %d\n", *requests)
 	fmt.Printf("Concurrency: %d\n", *concurrency)
+	fmt.Printf("Keep-alive: %t\n", *keepAlive)
 	fmt.Printf("Elapsed: %s\n", elapsed)
 	fmt.Printf("Throughput: %.2f req/s\n", float64(len(latencies))/elapsed.Seconds())
 	fmt.Printf("Latency avg: %s\n", summary.Average)
@@ -191,6 +199,9 @@ func runBenchmark(args []string) error {
 			fmt.Printf("  %d -> %d\n", code, statusCounts[code])
 		}
 	}
+	if statusCounts[http.StatusTooManyRequests] > 0 {
+		fmt.Println("Warning: 429 responses observed; do not use this run as clean parser/WAF latency evidence.")
+	}
 
 	if *jsonOut != "" {
 		report := benchmarkReport{
@@ -198,6 +209,7 @@ func runBenchmark(args []string) error {
 			URL:         *targetURL,
 			Requests:    *requests,
 			Concurrency: *concurrency,
+			KeepAlive:   *keepAlive,
 			Elapsed:     elapsed.String(),
 			Throughput:  float64(len(latencies)) / elapsed.Seconds(),
 			Errors:      errCount,
@@ -220,6 +232,56 @@ func runBenchmark(args []string) error {
 	return nil
 }
 
+func runSummarize(args []string) error {
+	fs := flag.NewFlagSet("summarize", flag.ContinueOnError)
+	glob := fs.String("glob", "", "glob pattern for benchmark JSON files")
+	if err := fs.Parse(args); err != nil {
+		return err
+	}
+
+	files := fs.Args()
+	if *glob != "" {
+		matches, err := filepath.Glob(*glob)
+		if err != nil {
+			return err
+		}
+		files = append(files, matches...)
+	}
+	if len(files) == 0 {
+		return errors.New("provide at least one benchmark JSON file or -glob pattern")
+	}
+
+	reportsByURL := make(map[string][]benchmarkReport)
+	for _, file := range files {
+		report, err := readBenchmarkReport(file)
+		if err != nil {
+			return err
+		}
+		reportsByURL[report.URL] = append(reportsByURL[report.URL], report)
+	}
+
+	fmt.Println("Benchmark summary")
+	fmt.Printf("%-34s %-5s %-12s %-12s %-12s %-12s %-12s\n", "URL", "Runs", "Median RPS", "Median Avg", "Median P50", "Median P95", "Median P99")
+	for _, url := range sortedURLs(reportsByURL) {
+		summary, err := summarizeBenchmarkReports(reportsByURL[url])
+		if err != nil {
+			return err
+		}
+		fmt.Printf(
+			"%-34s %-5d %-12.2f %-12s %-12s %-12s %-12s\n",
+			url,
+			summary.Runs,
+			summary.Throughput,
+			summary.Average,
+			summary.P50,
+			summary.P95,
+			summary.P99,
+		)
+	}
+
+	return nil
+}
+
 type payloadCase struct {
 	Name string
 	Body []byte
@@ -233,13 +295,21 @@ func loadPayloads(dir string) ([]payloadCase, error) {
 
 	payloads := make([]payloadCase, 0, len(entries))
 	for _, entry := range entries {
-		if entry.IsDir() || filepath.Ext(entry.Name()) != ".http" {
+		if entry.IsDir() {
+			continue
+		}
+
+		ext := filepath.Ext(entry.Name())
+		if ext != ".http" && ext != ".raw" {
 			continue
 		}
 
 		body, err := os.ReadFile(filepath.Join(dir, entry.Name()))
 		if err != nil {
 			return nil, err
+		}
+		if ext == ".http" {
+			body = normalizeHTTPFixture(body)
 		}
 
 		payloads = append(payloads, payloadCase{
@@ -253,6 +323,16 @@ func loadPayloads(dir string) ([]payloadCase, error) {
 	})
 
 	return payloads, nil
+}
+
+func normalizeHTTPFixture(body []byte) []byte {
+	text := strings.ReplaceAll(string(body), "\r\n", "\n")
+	text = strings.ReplaceAll(text, "\r", "\n")
+	text = strings.ReplaceAll(text, "\n", "\r\n")
+	if !strings.HasSuffix(text, "\r\n\r\n") {
+		text = strings.TrimRight(text, "\r\n") + "\r\n\r\n"
+	}
+	return []byte(text)
 }
 
 type rawResult struct {
@@ -398,6 +478,109 @@ func sortedStatusCodes(counts map[int]int) []int {
 	return codes
 }
 
+type benchmarkSummary struct {
+	Runs       int
+	Throughput float64
+	Average    time.Duration
+	P50        time.Duration
+	P95        time.Duration
+	P99        time.Duration
+}
+
+func readBenchmarkReport(path string) (benchmarkReport, error) {
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return benchmarkReport{}, err
+	}
+
+	var report benchmarkReport
+	if err := json.Unmarshal(data, &report); err != nil {
+		return benchmarkReport{}, err
+	}
+	if report.URL == "" {
+		return benchmarkReport{}, fmt.Errorf("%s is not a benchmark report", path)
+	}
+
+	return report, nil
+}
+
+func summarizeBenchmarkReports(reports []benchmarkReport) (benchmarkSummary, error) {
+	if len(reports) == 0 {
+		return benchmarkSummary{}, errors.New("no benchmark reports")
+	}
+
+	throughputs := make([]float64, 0, len(reports))
+	averages := make([]time.Duration, 0, len(reports))
+	p50s := make([]time.Duration, 0, len(reports))
+	p95s := make([]time.Duration, 0, len(reports))
+	p99s := make([]time.Duration, 0, len(reports))
+
+	for _, report := range reports {
+		average, err := time.ParseDuration(report.Latency.Average)
+		if err != nil {
+			return benchmarkSummary{}, err
+		}
+		p50, err := time.ParseDuration(report.Latency.P50)
+		if err != nil {
+			return benchmarkSummary{}, err
+		}
+		p95, err := time.ParseDuration(report.Latency.P95)
+		if err != nil {
+			return benchmarkSummary{}, err
+		}
+		p99, err := time.ParseDuration(report.Latency.P99)
+		if err != nil {
+			return benchmarkSummary{}, err
+		}
+
+		throughputs = append(throughputs, report.Throughput)
+		averages = append(averages, average)
+		p50s = append(p50s, p50)
+		p95s = append(p95s, p95)
+		p99s = append(p99s, p99)
+	}
+
+	return benchmarkSummary{
+		Runs:       len(reports),
+		Throughput: medianFloat64(throughputs),
+		Average:    medianDuration(averages),
+		P50:        medianDuration(p50s),
+		P95:        medianDuration(p95s),
+		P99:        medianDuration(p99s),
+	}, nil
+}
+
+func sortedURLs(reportsByURL map[string][]benchmarkReport) []string {
+	urls := make([]string, 0, len(reportsByURL))
+	for url := range reportsByURL {
+		urls = append(urls, url)
+	}
+	sort.Strings(urls)
+	return urls
+}
+
+func medianFloat64(values []float64) float64 {
+	sorted := append([]float64(nil), values...)
+	sort.Float64s(sorted)
+	mid := len(sorted) / 2
+	if len(sorted)%2 == 1 {
+		return sorted[mid]
+	}
+	return (sorted[mid-1] + sorted[mid]) / 2
+}
+
+func medianDuration(values []time.Duration) time.Duration {
+	sorted := append([]time.Duration(nil), values...)
+	sort.Slice(sorted, func(i, j int) bool {
+		return sorted[i] < sorted[j]
+	})
+	mid := len(sorted) / 2
+	if len(sorted)%2 == 1 {
+		return sorted[mid]
+	}
+	return (sorted[mid-1] + sorted[mid]) / 2
+}
+
 type compareReport struct {
 	GeneratedAt time.Time      `json:"generated_at"`
 	MTWSAddr    string         `json:"mtws_addr"`
@@ -424,6 +607,7 @@ type benchmarkReport struct {
 	URL         string       `json:"url"`
 	Requests    int          `json:"requests"`
 	Concurrency int          `json:"concurrency"`
+	KeepAlive   bool         `json:"keep_alive"`
 	Elapsed     string       `json:"elapsed"`
 	Throughput  float64      `json:"throughput"`
 	Errors      int          `json:"errors"`

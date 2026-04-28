@@ -47,6 +47,12 @@ Start both services:
 docker compose up --build
 ```
 
+Start the same stack in benchmark mode, with MTWS rate limiting disabled so
+latency measurements are not contaminated by `429` responses:
+```bash
+docker compose -f docker-compose.yml -f docker-compose.benchmark.yml up --build
+```
+
 Test the direct MTWS path:
 ```bash
 curl http://localhost:8080/health
@@ -91,7 +97,16 @@ Structured results can be written into `experiments/results/`.
 The detailed experiment workflow is documented in `docs/sprint4-experiments.md`,
 and the final write-up template is in `docs/final-report-template.md`.
 MTWS now enforces required `Host` semantics, rejects unsupported
-`Transfer-Encoding`, and scans URI, headers, and body content inside the parser.
+transfer codings, supports strict `Transfer-Encoding: chunked`, and scans URI,
+headers, body content, and trailers inside the parser.
+The lab tool normalizes `.http` fixtures to canonical CRLF line endings before
+replay; use `.raw` files when you want byte-exact malformed payload delivery.
+Runtime controls:
+- `MTWS_RATE_LIMIT_DISABLED=true` disables the token bucket
+- `MTWS_BENCHMARK_MODE=true` also disables the token bucket for benchmark runs
+- `MTWS_RATE_LIMIT_RATE` and `MTWS_RATE_LIMIT_CAPACITY` override token-bucket settings
+- `MTWS_WAF_POLICY_FILE` points MTWS at a line-based signature policy file
+The exact HTTP subset is documented in `docs/http-compliance.md`.
 
 ## Scripts
 
