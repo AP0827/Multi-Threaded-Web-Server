@@ -36,6 +36,63 @@ go run ./cmd/server
 
 The server listens on port 8080 by default.
 
+## Docker Comparison Stack
+
+Sprint 3 introduces a two-path comparison environment:
+- `mtws` on `http://localhost:8080`
+- `nginx + ModSecurity CRS` proxying to a separate standard-library backend on `http://localhost:8081`
+
+Start both services:
+```bash
+docker compose up --build
+```
+
+Test the direct MTWS path:
+```bash
+curl http://localhost:8080/health
+```
+
+Test the split-proxy path:
+```bash
+curl http://localhost:8081/health
+```
+
+The ModSecurity container uses the official `owasp/modsecurity-crs` nginx image
+and forwards traffic to an internal comparison backend built on Go's standard
+`net/http` parser. This separation matters for the research thesis: the proxy
+path must terminate at a different HTTP parser to expose split-proxy parsing
+discrepancies honestly. Custom CRS tuning files live in `docker/modsecurity/`
+so bypass and false-positive experiments have a stable place to be recorded.
+
+## Sprint 4 Lab Tool
+
+Replay raw payloads against both stacks:
+```bash
+go run ./cmd/lab compare
+```
+
+Replay raw payloads and save structured evidence:
+```bash
+go run ./cmd/lab compare -json-out experiments/results/compare.json
+```
+
+Benchmark MTWS directly:
+```bash
+go run ./cmd/lab benchmark -url http://127.0.0.1:8080/health -requests 200 -concurrency 10
+```
+
+Benchmark the split-proxy path:
+```bash
+go run ./cmd/lab benchmark -url http://127.0.0.1:8081/health -requests 200 -concurrency 10
+```
+
+Starter discrepancy and attack payloads live in `experiments/payloads/`.
+Structured results can be written into `experiments/results/`.
+The detailed experiment workflow is documented in `docs/sprint4-experiments.md`,
+and the final write-up template is in `docs/final-report-template.md`.
+MTWS now enforces required `Host` semantics, rejects unsupported
+`Transfer-Encoding`, and scans URI, headers, and body content inside the parser.
+
 ## Scripts
 
 Make scripts executable once:

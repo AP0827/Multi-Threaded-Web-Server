@@ -2,6 +2,8 @@ package main
 
 import (
 	"MTWS/config"
+	"MTWS/core"
+	mtwshttp "MTWS/http"
 	"MTWS/pool"
 	"MTWS/security/ratelimiter"
 	"log"
@@ -20,6 +22,7 @@ func main() {
 	/* make buffered job pool queue here. */
 	jobs := make(chan pool.Job, config.JobQueueSize)
 	pool.StartWorkerPool(config.WorkerPoolSize, jobs)
+	router := buildRouter()
 
 	log.Println("Server running on port:8080!")
 
@@ -37,19 +40,34 @@ func main() {
 		}
 
 		if limiter.Allow(clientIP) {
-			jobs <- pool.Job{Conn: conn}
+			jobs <- pool.Job{Conn: conn, Router: router}
 			continue
 		}
 
 		log.Printf("Status 429: request blocked by token bucket policy for %s", clientIP)
-		response := "HTTP/1.1 429 Too Many Requests\r\n" +
-			"Content-Type: text/plain\r\n" +
-			"Content-Length: 17\r\n" +
-			"\r\n" +
-			"Too Many Requests"
-		if _, err := conn.Write([]byte(response)); err != nil {
+		if err := core.NewResponseWriter(conn, "HTTP/1.1").WriteText(core.StatusTooManyRequests, ""); err != nil {
 			log.Println("Write error:", err)
 		}
 		conn.Close()
 	}
+}
+
+func buildRouter() *core.Router {
+	router := core.NewRouter()
+
+	router.Handle("/", func(w *core.ResponseWriter, req *mtwshttp.Request) {
+		body := "MTWS baseline server is running\n"
+		if err := w.WriteText(core.StatusOK, body); err != nil {
+			log.Println("Write error:", err)
+		}
+	})
+
+	router.Handle("/health", func(w *core.ResponseWriter, req *mtwshttp.Request) {
+		body := "ok\n"
+		if err := w.WriteText(core.StatusOK, body); err != nil {
+			log.Println("Write error:", err)
+		}
+	})
+
+	return router
 }

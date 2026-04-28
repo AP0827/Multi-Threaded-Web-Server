@@ -3,65 +3,47 @@ package core
 import (
 	mtwshttp "MTWS/http"
 	"bufio"
-	"fmt"
+	"errors"
 	"log"
 	"net"
 	"time"
 )
 
-func HandleConnection(conn net.Conn) {
+func HandleConnection(conn net.Conn, router *Router) {
 	defer conn.Close()
 
 	log.Println("New request from", conn.RemoteAddr())
 
 	// Prevent slowloris-style hanging
-	conn.SetReadDeadline(time.Now().Add(5 * time.Second))
-
-	reader := bufio.NewReader(conn)
-
-	// Read raw request (just first line for now)
-	// _, err := reader.ReadString('\n')
-	// if err != nil {
-	// 	log.Println("Read error:", err)
-	// 	return
-	// }
-
-	req, err := mtwshttp.ParseRequest(reader)
-	if err != nil {
-		log.Println("Read error:", err)
-		respondBadRequest(conn)
+	if err := conn.SetReadDeadline(time.Now().Add(5 * time.Second)); err != nil {
+		log.Println("Failed to set read deadline:", err)
 		return
 	}
 
-	respond(conn, req)
-}
+	reader := bufio.NewReader(conn)
 
-func respond(conn net.Conn, req *mtwshttp.Request) {
-	log.Printf("Request method=%s", req.Method())
-	log.Printf("Request path=%s", req.Path())
-	log.Printf("Request version=%s", req.Version())
+	req, err := mtwshttp.ParseRequest(reader)
+	if err != nil {
+		var securityErr *mtwshttp.SecurityError
+		if errors.As(err, &securityErr) {
+			log.Printf("WAF blocked request from %s: field=%s pattern=%q", conn.RemoteAddr(), securityErr.Field, securityErr.Pattern)
+			writeErrorResponse(conn, "HTTP/1.1", StatusForbidden)
+			return
+		}
 
-	body := fmt.Sprintf("Hello path=%s\n", req.Path())
-
-	response := req.Version() + " 200 OK\r\n" +
-		"Content-Type: text/plain\r\n" +
-		fmt.Sprintf("Content-Length: %d\r\n", len(body)) +
-		"\r\n" +
-		body
-
-	if _, err := conn.Write([]byte(response)); err != nil {
-		log.Println("Write error:", err)
+		log.Println("Parse error:", err)
+		writeErrorResponse(conn, "HTTP/1.1", StatusBadRequest)
+		return
 	}
-}
 
-func respondBadRequest(conn net.Conn) {
-	response := "HTTP/1.1 400 Bad Request\r\n" +
-		"Content-Type: text/plain\r\n" +
-		"Content-Length: 11\r\n" +
-		"\r\n" +
-		"Bad Request"
-
-	if _, err := conn.Write([]byte(response)); err != nil {
-		log.Println("Write error:", err)
+	if router == nil {
+		log.Println("Router is not configured")
+		writeErrorResponse(conn, req.Version(), StatusInternalServerError)
+		return
 	}
+
+	log.Printf("Request method=%s path=%s version=%s", req.Method(), req.Path(), req.Version())
+
+	writer := NewResponseWriter(conn, req.Version())
+	router.ServeHTTP(writer, req)
 }

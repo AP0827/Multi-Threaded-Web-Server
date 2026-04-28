@@ -6,13 +6,14 @@ import (
 )
 
 type Job struct {
-	Conn net.Conn
+	Conn   net.Conn
+	Router *core.Router
 }
 
 func worker(id int, jobs <-chan Job) {
 	for job := range jobs {
 		/*handle job worker connection*/
-		core.HandleConnection(job.Conn)
+		core.HandleConnection(job.Conn, job.Router)
 	}
 }
 

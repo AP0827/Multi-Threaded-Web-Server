@@ -1,0 +1,70 @@
+services:
+  mtws:
+    build:
+      context: .
+      dockerfile: Dockerfile
+      args:
+        APP_PATH: ./cmd/server
+        BIN_NAME: mtws
+    container_name: mtws-app
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://127.0.0.1:8080/health"]
+      interval: 10s
+      timeout: 3s
+      retries: 5
+      start_period: 5s
+    ports:
+      - "8080:8080"
+    networks:
+      - mtws-net
+
+  backend:
+    build:
+      context: .
+      dockerfile: Dockerfile
+      args:
+        APP_PATH: ./cmd/backend
+        BIN_NAME: backend
+    container_name: mtws-standard-backend
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://127.0.0.1:8080/health"]
+      interval: 10s
+      timeout: 3s
+      retries: 5
+      start_period: 5s
+    networks:
+      - mtws-net
+
+  modsecurity:
+    image: owasp/modsecurity-crs:4.25-nginx-lts
+    container_name: mtws-modsecurity
+    depends_on:
+      backend:
+        condition: service_healthy
+    environment:
+      BACKEND: http://backend:8080
+      PORT: "8080"
+      SERVER_NAME: localhost
+      MODSEC_AUDIT_ENGINE: "On"
+      MODSEC_AUDIT_LOG: /dev/stdout
+      MODSEC_AUDIT_LOG_FORMAT: JSON
+      PROXY_TIMEOUT: 30s
+      BLOCKING_PARANOIA: "1"
+      DETECTION_PARANOIA: "1"
+    ports:
+      - "8081:8080"
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://127.0.0.1:8080/healthz"]
+      interval: 10s
+      timeout: 3s
+      retries: 5
+      start_period: 10s
+    volumes:
+      - ./docker/modsecurity/REQUEST-900-EXCLUSION-RULES-BEFORE-CRS.conf:/etc/modsecurity.d/owasp-crs/rules/REQUEST-900-EXCLUSION-RULES-BEFORE-CRS.conf:ro
+      - ./docker/modsecurity/RESPONSE-999-EXCLUSION-RULES-AFTER-CRS.conf:/etc/modsecurity.d/owasp-crs/rules/RESPONSE-999-EXCLUSION-RULES-AFTER-CRS.conf:ro
+    networks:
+      - mtws-net
+
+networks:
+  mtws-net:
+    driver: bridge

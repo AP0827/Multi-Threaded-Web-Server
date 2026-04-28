@@ -1,0 +1,92 @@
+{
+  "generated_at": "2026-04-28T05:06:48.3172296Z",
+  "mtws_addr": "127.0.0.1:8080",
+  "proxy_addr": "127.0.0.1:8081",
+  "payload_dir": "experiments/payloads",
+  "results": [
+    {
+      "payload": "001-benign-health.http",
+      "mtws": {
+        "status_code": 0,
+        "status_line": "",
+        "error": "dial tcp 127.0.0.1:8080: connectex: No connection could be made because the target machine actively refused it."
+      },
+      "proxy": {
+        "status_code": 0,
+        "status_line": "",
+        "error": "dial tcp 127.0.0.1:8081: connectex: No connection could be made because the target machine actively refused it."
+      },
+      "divergence": "unavailable"
+    },
+    {
+      "payload": "010-uri-union-select-encoded.http",
+      "mtws": {
+        "status_code": 0,
+        "status_line": "",
+        "error": "dial tcp 127.0.0.1:8080: connectex: No connection could be made because the target machine actively refused it."
+      },
+      "proxy": {
+        "status_code": 0,
+        "status_line": "",
+        "error": "dial tcp 127.0.0.1:8081: connectex: No connection could be made because the target machine actively refused it."
+      },
+      "divergence": "unavailable"
+    },
+    {
+      "payload": "020-header-script.http",
+      "mtws": {
+        "status_code": 0,
+        "status_line": "",
+        "error": "dial tcp 127.0.0.1:8080: connectex: No connection could be made because the target machine actively refused it."
+      },
+      "proxy": {
+        "status_code": 0,
+        "status_line": "",
+        "error": "dial tcp 127.0.0.1:8081: connectex: No connection could be made because the target machine actively refused it."
+      },
+      "divergence": "unavailable"
+    },
+    {
+      "payload": "030-uri-traversal.http",
+      "mtws": {
+        "status_code": 0,
+        "status_line": "",
+        "error": "dial tcp 127.0.0.1:8080: connectex: No connection could be made because the target machine actively refused it."
+      },
+      "proxy": {
+        "status_code": 0,
+        "status_line": "",
+        "error": "dial tcp 127.0.0.1:8081: connectex: No connection could be made because the target machine actively refused it."
+      },
+      "divergence": "unavailable"
+    },
+    {
+      "payload": "040-obs-fold-header.http",
+      "mtws": {
+        "status_code": 0,
+        "status_line": "",
+        "error": "dial tcp 127.0.0.1:8080: connectex: No connection could be made because the target machine actively refused it."
+      },
+      "proxy": {
+        "status_code": 0,
+        "status_line": "",
+        "error": "dial tcp 127.0.0.1:8081: connectex: No connection could be made because the target machine actively refused it."
+      },
+      "divergence": "unavailable"
+    },
+    {
+      "payload": "050-duplicate-content-length.http",
+      "mtws": {
+        "status_code": 0,
+        "status_line": "",
+        "error": "dial tcp 127.0.0.1:8080: connectex: No connection could be made because the target machine actively refused it."
+      },
+      "proxy": {
+        "status_code": 0,
+        "status_line": "",
+        "error": "dial tcp 127.0.0.1:8081: connectex: No connection could be made because the target machine actively refused it."
+      },
+      "divergence": "unavailable"
+    }
+  ]
+}

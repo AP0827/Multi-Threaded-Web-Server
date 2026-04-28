@@ -1,5 +1,7 @@
 package mtwshttp
 
+import "fmt"
+
 type Request struct {
 	method  string
 	path    string
@@ -26,4 +28,13 @@ func (r *Request) Headers() map[string]string {
 
 func (r *Request) Body() string {
 	return string(r.body)
+}
+
+type SecurityError struct {
+	Pattern string
+	Field   string
+}
+
+func (e *SecurityError) Error() string {
+	return fmt.Sprintf("request blocked by waf: field=%s pattern=%q", e.Field, e.Pattern)
 }
