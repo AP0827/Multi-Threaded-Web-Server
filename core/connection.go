@@ -43,6 +43,11 @@ func respond(conn net.Conn, req *mtwshttp.Request) {
 
 	body := fmt.Sprintf("Hello path=%s\n", req.Path())
 
+	if path == "/" {
+		body = "Hello world\n"
+
+	}
+
 	response := req.Version() + " 200 OK\r\n" +
 		"Content-Type: text/plain\r\n" +
 		fmt.Sprintf("Content-Length: %d\r\n", len(body)) +

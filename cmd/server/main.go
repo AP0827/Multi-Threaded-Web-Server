@@ -4,6 +4,7 @@ import (
 	"MTWS/config"
 	"MTWS/pool"
 	"MTWS/security/ratelimiter"
+	"fmt"
 	"log"
 	"net"
 )
@@ -17,39 +18,72 @@ func main() {
 	}
 	defer l.Close()
 
-	/* make buffered job pool queue here. */
 	jobs := make(chan pool.Job, config.JobQueueSize)
 	pool.StartWorkerPool(config.WorkerPoolSize, jobs)
 
-	log.Println("Server running on port:8080!")
+	log.Printf("Server listening on %s", config.ServerAddress)
 
 	for {
 		conn, err := l.Accept()
 		if err != nil {
-			log.Println("Accept error : ", err)
+			log.Println("accept error:", err)
 			continue
 		}
 
-		remoteAddr := conn.RemoteAddr().String()
-		clientIP, _, err := net.SplitHostPort(remoteAddr)
-		if err != nil {
-			clientIP = remoteAddr
-		}
+		handleConnection(conn, jobs)
+	}
+}
 
-		if limiter.Allow(clientIP) {
-			jobs <- pool.Job{Conn: conn}
-			continue
-		}
+func handleConnection(conn net.Conn, jobs chan pool.Job) {
+	clientIP := remoteIP(conn)
 
-		log.Printf("Status 429: request blocked by token bucket policy for %s", clientIP)
-		response := "HTTP/1.1 429 Too Many Requests\r\n" +
-			"Content-Type: text/plain\r\n" +
-			"Content-Length: 17\r\n" +
-			"\r\n" +
-			"Too Many Requests"
-		if _, err := conn.Write([]byte(response)); err != nil {
-			log.Println("Write error:", err)
+	if !limiter.Allow(clientIP) {
+		log.Printf("Status %d: request blocked by token bucket policy for %s", 429, clientIP)
+		if err := writeResponseAndClose(conn, 429, "Too Many Requests"); err != nil {
+			log.Println("write error:", err)
 		}
-		conn.Close()
+		return
+	}
+
+	select {
+	case jobs <- pool.Job{Conn: conn}:
+		return
+	default:
+		log.Printf("Status %d: queue full, request rejected for %s", 503, clientIP)
+		if err := writeResponseAndClose(conn, 503, "Service Unavailable"); err != nil {
+			log.Println("write error:", err)
+		}
+	}
+}
+
+func remoteIP(conn net.Conn) string {
+	remoteAddr := conn.RemoteAddr().String()
+	clientIP, _, err := net.SplitHostPort(remoteAddr)
+	if err != nil {
+		return remoteAddr
+	}
+	return clientIP
+}
+
+func writeResponseAndClose(conn net.Conn, statusCode int, body string) error {
+	response := fmt.Sprintf("HTTP/1.1 %d %s\r\n", statusCode, httpStatusText(statusCode)) +
+		"Content-Type: text/plain\r\n" +
+		fmt.Sprintf("Content-Length: %d\r\n", len(body)) +
+		"\r\n" +
+		body
+
+	_, err := conn.Write([]byte(response))
+	conn.Close()
+	return err
+}
+
+func httpStatusText(statusCode int) string {
+	switch statusCode {
+	case 429:
+		return "Too Many Requests"
+	case 503:
+		return "Service Unavailable"
+	default:
+		return "OK"
 	}
 }

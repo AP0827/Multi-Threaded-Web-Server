@@ -65,6 +65,24 @@ Arguments:
 - total requests (default: 120)
 - concurrency (default: 30)
 
+Mixed status test (valid + malformed + burst traffic together):
+```bash
+./scripts/load/mixed_test.sh
+```
+
+Custom mixed test:
+```bash
+./scripts/load/mixed_test.sh http://localhost:8080/ 90 15 60 30 262144
+```
+
+Arguments:
+- URL (default: http://localhost:8080/)
+- valid requests (default: 90)
+- malformed requests (default: 15)
+- burst requests (default: 60)
+- concurrency (default: 30)
+- burst body size in bytes (default: 262144)
+
 Sustained test (steady traffic over time):
 ```bash
 ./scripts/load/sustained_test.sh
@@ -83,6 +101,8 @@ Arguments:
 Expected outcome with rate limiter enabled:
 - Some requests return 200 OK.
 - Under heavy load, some requests return 429 Too Many Requests.
+- Mixed malformed traffic can also surface 400 Bad Request.
+- Queue pressure can surface 503 Service Unavailable.
 
 ## Test
 ```bash
