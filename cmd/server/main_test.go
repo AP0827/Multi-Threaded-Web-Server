@@ -60,6 +60,33 @@ func TestBuildRouterRejectsWrongMethod(t *testing.T) {
 	}
 }
 
+func TestBuildRouterServesStaticFile(t *testing.T) {
+	response := issueRawRequest(t, "GET /static/index.html HTTP/1.1\r\nHost: localhost\r\n\r\n")
+	if !strings.Contains(response, "HTTP/1.1 200 OK") {
+		t.Fatalf("expected 200 response, got %q", response)
+	}
+	if !strings.Contains(response, "Content-Type: text/html") {
+		t.Fatalf("expected html content type, got %q", response)
+	}
+	if !strings.Contains(response, "MTWS Static File Serving") {
+		t.Fatalf("expected static demo body, got %q", response)
+	}
+}
+
+func TestBuildRouterRejectsStaticBackslashPath(t *testing.T) {
+	response := issueRawRequest(t, "GET /static/%5csecret HTTP/1.1\r\nHost: localhost\r\n\r\n")
+	if !strings.Contains(response, "HTTP/1.1 400 Bad Request") {
+		t.Fatalf("expected 400 response, got %q", response)
+	}
+}
+
+func TestBuildRouterBlocksStaticTraversalPath(t *testing.T) {
+	response := issueRawRequest(t, "GET /static/%2e%2e/README.md HTTP/1.1\r\nHost: localhost\r\n\r\n")
+	if !strings.Contains(response, "HTTP/1.1 403 Forbidden") {
+		t.Fatalf("expected 403 response, got %q", response)
+	}
+}
+
 func TestEnqueueJobTimesOutWhenQueueIsFull(t *testing.T) {
 	jobs := make(chan pool.Job, 1)
 	jobs <- pool.Job{}

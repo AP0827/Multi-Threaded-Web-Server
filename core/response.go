@@ -66,14 +66,25 @@ func NewResponseWriterWithOptions(conn net.Conn, httpVersion string, options Res
 }
 
 func (w *ResponseWriter) WriteText(status StatusCode, body string) error {
+	if body == "" {
+		body = status.Body
+	}
+	return w.write(status, "text/plain; charset=utf-8", []byte(body))
+}
+
+func (w *ResponseWriter) WriteBytes(status StatusCode, contentType string, body []byte) error {
+	if contentType == "" {
+		contentType = "application/octet-stream"
+	}
+	return w.write(status, contentType, body)
+}
+
+func (w *ResponseWriter) write(status StatusCode, contentType string, body []byte) error {
 	if w == nil || w.conn == nil {
 		return errors.New("response writer is not configured")
 	}
 	if w.wrote {
 		return errors.New("response already written")
-	}
-	if body == "" {
-		body = status.Body
 	}
 	if w.writeTimeout > 0 {
 		if err := w.conn.SetWriteDeadline(time.Now().Add(w.writeTimeout)); err != nil {
@@ -88,19 +99,20 @@ func (w *ResponseWriter) WriteText(status StatusCode, body string) error {
 		keepAliveHeader = fmt.Sprintf("Keep-Alive: timeout=%d, max=%d\r\n", int(w.keepAliveTimeout.Seconds()), w.keepAliveMaxRequests)
 	}
 
-	response := fmt.Sprintf(
-		"%s %d %s\r\nDate: %s\r\nServer: MTWS\r\nContent-Type: text/plain; charset=utf-8\r\nX-Content-Type-Options: nosniff\r\nContent-Length: %d\r\nConnection: %s\r\n%s\r\n%s",
+	header := fmt.Sprintf(
+		"%s %d %s\r\nDate: %s\r\nServer: MTWS\r\nContent-Type: %s\r\nX-Content-Type-Options: nosniff\r\nContent-Length: %d\r\nConnection: %s\r\n%s\r\n",
 		w.httpVersion,
 		status.Code,
 		status.Reason,
 		time.Now().UTC().Format("Mon, 02 Jan 2006 15:04:05 GMT"),
+		contentType,
 		len(body),
 		connectionHeader,
 		keepAliveHeader,
-		body,
 	)
 
-	n, err := w.conn.Write([]byte(response))
+	response := append([]byte(header), body...)
+	n, err := w.conn.Write(response)
 	if err != nil {
 		return err
 	}

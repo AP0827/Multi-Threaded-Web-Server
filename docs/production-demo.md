@@ -21,6 +21,8 @@ preserving the research objective of parser-integrated WAF inspection.
   traffic.
 - `/metrics` exports Prometheus-style counters for traffic, WAF blocks, parse
   rejects, queue rejects, rate limiting, and response classes.
+- `/static/` serves files from a fixed public directory with path normalization,
+  symlink resolution, and root confinement.
 - Optional TLS can be enabled with certificate and key file paths.
 - A local self-signed certificate can be generated with `cmd/certgen` for
   HTTPS demonstrations.
@@ -39,6 +41,7 @@ preserving the research objective of parser-integrated WAF inspection.
 | `MTWS_MAX_KEEPALIVE_REQUESTS` | `100` | Maximum requests served on one TCP connection |
 | `MTWS_QUEUE_TIMEOUT` | `250ms` | Maximum time to wait for worker queue space |
 | `MTWS_SHUTDOWN_TIMEOUT` | `10s` | Maximum worker-drain wait during shutdown |
+| `MTWS_STATIC_DIR` | `public` | Directory exposed under `/static/` |
 | `MTWS_RATE_LIMIT_DISABLED` | unset | Disables token-bucket limiting when true |
 | `MTWS_BENCHMARK_MODE` | unset | Disables rate limiting for clean benchmarks |
 | `MTWS_RATE_LIMIT_RATE` | `5.0` | Token refill rate per client per second |
@@ -92,6 +95,13 @@ Check metrics:
 curl http://127.0.0.1:8080/metrics
 ```
 
+Check secure static serving:
+
+```powershell
+curl http://127.0.0.1:8080/static/
+curl http://127.0.0.1:8080/static/styles.css
+```
+
 Trigger a WAF block:
 
 ```powershell
@@ -133,7 +143,16 @@ go run ./cmd/lab benchmark -url http://127.0.0.1:8080/health -duration 2m -concu
   availability risks.
 - Keep-alive demonstrates realistic HTTP/1.1 client behavior while enforcing
   idle and max-request limits to prevent connection hoarding.
+- Static file serving is intentionally confined to one configured directory;
+  traversal attempts are rejected before file access.
 - Metrics and structured logs provide operational evidence during the demo.
+
+## Security Pipeline Note
+
+MTWS is modular, but it does not model WAF inspection as ordinary middleware
+after parsing. That is deliberate. Rate limiting and routing are outer modules,
+while request validation and WAF pattern matching are fused into the parser so
+there is no separate parser interpretation for attackers to exploit.
 
 ## Honest Remaining Limitations
 

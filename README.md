@@ -47,6 +47,7 @@ Useful local checks:
 curl http://127.0.0.1:8080/health
 curl http://127.0.0.1:8080/ready
 curl http://127.0.0.1:8080/metrics
+curl http://127.0.0.1:8080/static/
 ```
 
 ## Docker Comparison Stack
@@ -123,6 +124,7 @@ Runtime controls:
 - `MTWS_IDLE_TIMEOUT` sets the HTTP/1.1 keep-alive idle deadline
 - `MTWS_MAX_KEEPALIVE_REQUESTS` caps requests served on one TCP connection
 - `MTWS_QUEUE_TIMEOUT` sets how long accept waits for worker queue capacity
+- `MTWS_STATIC_DIR` sets the fixed directory served under `/static/`
 - `MTWS_SHUTDOWN_TIMEOUT` sets graceful worker-drain timeout
 - `MTWS_RATE_LIMIT_DISABLED=true` disables the token bucket
 - `MTWS_BENCHMARK_MODE=true` also disables the token bucket for benchmark runs

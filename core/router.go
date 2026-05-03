@@ -7,8 +7,14 @@ import (
 
 type HandlerFunc func(*ResponseWriter, *mtwshttp.Request)
 
+type prefixRoute struct {
+	prefix  string
+	handler HandlerFunc
+}
+
 type Router struct {
-	routes map[string]HandlerFunc
+	routes       map[string]HandlerFunc
+	prefixRoutes []prefixRoute
 }
 
 func NewRouter() *Router {
@@ -25,6 +31,17 @@ func (r *Router) Handle(path string, handler HandlerFunc) {
 	r.routes[path] = handler
 }
 
+func (r *Router) HandlePrefix(prefix string, handler HandlerFunc) {
+	if r == nil || prefix == "" || handler == nil {
+		return
+	}
+
+	r.prefixRoutes = append(r.prefixRoutes, prefixRoute{
+		prefix:  prefix,
+		handler: handler,
+	})
+}
+
 func (r *Router) ServeHTTP(w *ResponseWriter, req *mtwshttp.Request) {
 	if r == nil || w == nil || req == nil {
 		return
@@ -33,6 +50,13 @@ func (r *Router) ServeHTTP(w *ResponseWriter, req *mtwshttp.Request) {
 	path, _, _ := strings.Cut(req.Path(), "?")
 	handler, ok := r.routes[path]
 	if !ok {
+		for _, route := range r.prefixRoutes {
+			if strings.HasPrefix(path, route.prefix) {
+				route.handler(w, req)
+				return
+			}
+		}
+
 		_ = w.WriteText(StatusNotFound, StatusNotFound.Body)
 		return
 	}

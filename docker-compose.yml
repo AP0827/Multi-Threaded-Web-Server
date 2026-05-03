@@ -15,6 +15,7 @@ services:
       MTWS_MAX_KEEPALIVE_REQUESTS: "100"
       MTWS_QUEUE_TIMEOUT: 250ms
       MTWS_SHUTDOWN_TIMEOUT: 10s
+      MTWS_STATIC_DIR: public
       MTWS_WAF_POLICY_FILE: /etc/mtws/waf-policy.txt
     healthcheck:
       test: ["CMD", "wget", "-qO-", "http://127.0.0.1:8080/ready"]

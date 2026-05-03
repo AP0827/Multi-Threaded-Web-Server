@@ -11,9 +11,12 @@ import (
 	"errors"
 	"fmt"
 	"log"
+	"mime"
 	"net"
+	"net/url"
 	"os"
 	"os/signal"
+	"path/filepath"
 	"strings"
 	"syscall"
 	"time"
@@ -44,7 +47,7 @@ func run(ctx context.Context, cfg config.Config) error {
 	jobs := make(chan pool.Job, cfg.JobQueueSize)
 	workers := pool.StartWorkerPool(cfg.WorkerPoolSize, jobs)
 	metrics := core.NewMetrics()
-	router := buildRouterWithMetrics(metrics)
+	router := buildRouterWithMetrics(metrics, cfg.StaticDir)
 	limiter := ratelimiter.New(cfg.RateLimitRate, cfg.RateLimitCapacity)
 
 	logStartup(cfg)
@@ -184,10 +187,10 @@ func logStartup(cfg config.Config) {
 }
 
 func buildRouter() *core.Router {
-	return buildRouterWithMetrics(core.NewMetrics())
+	return buildRouterWithMetrics(core.NewMetrics(), config.DefaultStaticDir)
 }
 
-func buildRouterWithMetrics(metrics *core.Metrics) *core.Router {
+func buildRouterWithMetrics(metrics *core.Metrics, staticDir string) *core.Router {
 	router := core.NewRouter()
 
 	router.Handle("/", func(w *core.ResponseWriter, req *mtwshttp.Request) {
@@ -249,6 +252,8 @@ func buildRouterWithMetrics(metrics *core.Metrics) *core.Router {
 		}
 	})
 
+	router.HandlePrefix("/static/", secureStaticHandler(staticDir))
+
 	return router
 }
 
@@ -260,4 +265,152 @@ func requireMethod(w *core.ResponseWriter, req *mtwshttp.Request, method string)
 		log.Println("Write error:", err)
 	}
 	return false
+}
+
+func secureStaticHandler(root string) core.HandlerFunc {
+	absRoot, rootErr := resolveStaticRoot(root)
+
+	return func(w *core.ResponseWriter, req *mtwshttp.Request) {
+		if !requireMethod(w, req, "GET") {
+			return
+		}
+
+		pathOnly, _, _ := strings.Cut(req.Path(), "?")
+		rawRelative := strings.TrimPrefix(pathOnly, "/static/")
+		if rawRelative == "" {
+			rawRelative = "index.html"
+		}
+
+		decodedRelative, err := url.PathUnescape(rawRelative)
+		if err != nil || !isSafeStaticPath(decodedRelative) {
+			_ = w.WriteText(core.StatusBadRequest, "")
+			return
+		}
+		if rootErr != nil {
+			log.Printf("Static root error: %v", rootErr)
+			_ = w.WriteText(core.StatusInternalServerError, "")
+			return
+		}
+
+		candidate := filepath.Join(absRoot, filepath.FromSlash(decodedRelative))
+		resolved, err := filepath.EvalSymlinks(candidate)
+		if err != nil {
+			if os.IsNotExist(err) {
+				_ = w.WriteText(core.StatusNotFound, "")
+				return
+			}
+			log.Printf("Static file resolution error: %v", err)
+			_ = w.WriteText(core.StatusInternalServerError, "")
+			return
+		}
+		if !isWithinRoot(absRoot, resolved) {
+			_ = w.WriteText(core.StatusForbidden, "")
+			return
+		}
+
+		info, err := os.Stat(resolved)
+		if err != nil {
+			if os.IsNotExist(err) {
+				_ = w.WriteText(core.StatusNotFound, "")
+				return
+			}
+			log.Printf("Static file stat error: %v", err)
+			_ = w.WriteText(core.StatusInternalServerError, "")
+			return
+		}
+		if info.IsDir() {
+			resolved, err = filepath.EvalSymlinks(filepath.Join(resolved, "index.html"))
+			if err != nil {
+				if os.IsNotExist(err) {
+					_ = w.WriteText(core.StatusNotFound, "")
+					return
+				}
+				log.Printf("Static index resolution error: %v", err)
+				_ = w.WriteText(core.StatusInternalServerError, "")
+				return
+			}
+			if !isWithinRoot(absRoot, resolved) {
+				_ = w.WriteText(core.StatusForbidden, "")
+				return
+			}
+			info, err = os.Stat(resolved)
+			if err != nil || info.IsDir() {
+				_ = w.WriteText(core.StatusNotFound, "")
+				return
+			}
+		}
+
+		body, err := os.ReadFile(resolved)
+		if err != nil {
+			log.Printf("Static file read error: %v", err)
+			_ = w.WriteText(core.StatusInternalServerError, "")
+			return
+		}
+
+		contentType := mime.TypeByExtension(filepath.Ext(resolved))
+		if contentType == "" {
+			contentType = "application/octet-stream"
+		}
+		if err := w.WriteBytes(core.StatusOK, contentType, body); err != nil {
+			log.Println("Write error:", err)
+		}
+	}
+}
+
+func resolveStaticRoot(root string) (string, error) {
+	if filepath.IsAbs(root) {
+		return filepath.EvalSymlinks(root)
+	}
+
+	wd, err := os.Getwd()
+	if err != nil {
+		return "", err
+	}
+
+	for i := 0; i < 6; i++ {
+		candidate := filepath.Join(wd, root)
+		if info, err := os.Stat(candidate); err == nil && info.IsDir() {
+			return filepath.EvalSymlinks(candidate)
+		}
+
+		parent := filepath.Dir(wd)
+		if parent == wd {
+			break
+		}
+		wd = parent
+	}
+
+	absRoot, err := filepath.Abs(root)
+	if err != nil {
+		return "", err
+	}
+	return filepath.EvalSymlinks(absRoot)
+}
+
+func isSafeStaticPath(path string) bool {
+	if path == "" {
+		return true
+	}
+	if strings.Contains(path, "\\") || strings.Contains(path, ":") {
+		return false
+	}
+	for _, r := range path {
+		if r <= 31 || r == 127 {
+			return false
+		}
+	}
+
+	cleaned := filepath.ToSlash(filepath.Clean(filepath.FromSlash(path)))
+	if cleaned == "." {
+		return true
+	}
+	return !strings.HasPrefix(cleaned, "../") && cleaned != ".." && !strings.HasPrefix(cleaned, "/")
+}
+
+func isWithinRoot(root string, target string) bool {
+	relative, err := filepath.Rel(root, target)
+	if err != nil {
+		return false
+	}
+	return relative == "." || (!strings.HasPrefix(relative, ".."+string(filepath.Separator)) && relative != ".." && !filepath.IsAbs(relative))
 }

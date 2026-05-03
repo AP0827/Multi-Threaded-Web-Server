@@ -20,6 +20,7 @@ const (
 	DefaultShutdownTimeout   = 10 * time.Second
 	DefaultQueueTimeout      = 250 * time.Millisecond
 	DefaultMaxKeepAlive      = 100
+	DefaultStaticDir         = "public"
 )
 
 type Config struct {
@@ -32,6 +33,7 @@ type Config struct {
 	ShutdownTimeout   time.Duration
 	QueueTimeout      time.Duration
 	MaxKeepAlive      int
+	StaticDir         string
 	TLSCertFile       string
 	TLSKeyFile        string
 	RateLimitEnabled  bool
@@ -50,6 +52,7 @@ func Load() Config {
 		ShutdownTimeout:   envDuration("MTWS_SHUTDOWN_TIMEOUT", DefaultShutdownTimeout),
 		QueueTimeout:      envDuration("MTWS_QUEUE_TIMEOUT", DefaultQueueTimeout),
 		MaxKeepAlive:      envInt("MTWS_MAX_KEEPALIVE_REQUESTS", DefaultMaxKeepAlive),
+		StaticDir:         envString("MTWS_STATIC_DIR", DefaultStaticDir),
 		TLSCertFile:       strings.TrimSpace(os.Getenv("MTWS_TLS_CERT_FILE")),
 		TLSKeyFile:        strings.TrimSpace(os.Getenv("MTWS_TLS_KEY_FILE")),
 		RateLimitEnabled:  RateLimitEnabled(),

@@ -66,6 +66,7 @@ func TestLoadReadsOperationalOverrides(t *testing.T) {
 	t.Setenv("MTWS_SHUTDOWN_TIMEOUT", "4s")
 	t.Setenv("MTWS_QUEUE_TIMEOUT", "150ms")
 	t.Setenv("MTWS_MAX_KEEPALIVE_REQUESTS", "77")
+	t.Setenv("MTWS_STATIC_DIR", "site")
 	t.Setenv("MTWS_TLS_CERT_FILE", "server.crt")
 	t.Setenv("MTWS_TLS_KEY_FILE", "server.key")
 
@@ -96,6 +97,9 @@ func TestLoadReadsOperationalOverrides(t *testing.T) {
 	}
 	if cfg.MaxKeepAlive != 77 {
 		t.Fatalf("expected max keep-alive override, got %d", cfg.MaxKeepAlive)
+	}
+	if cfg.StaticDir != "site" {
+		t.Fatalf("expected static dir override, got %q", cfg.StaticDir)
 	}
 	if !cfg.TLSEnabled() {
 		t.Fatal("expected TLS to be enabled when both files are configured")
