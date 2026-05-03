@@ -33,7 +33,7 @@ func (r *Router) ServeHTTP(w *ResponseWriter, req *mtwshttp.Request) {
 	path, _, _ := strings.Cut(req.Path(), "?")
 	handler, ok := r.routes[path]
 	if !ok {
-		writeErrorResponse(w.conn, req.Version(), StatusNotFound)
+		_ = w.WriteText(StatusNotFound, StatusNotFound.Body)
 		return
 	}
 

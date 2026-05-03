@@ -1,18 +1,23 @@
 # MTWS - Multi Threaded Web Server (Go)
 
-MTWS is a learning-focused Go project for building a multithreaded HTTP server step by step.
+MTWS is a research-oriented HTTP/1.1 server written in Go on top of raw TCP
+sockets. Its core thesis is that WAF inspection should happen inside the HTTP
+parser itself, so the security engine and the application server cannot parse
+ambiguous requests differently.
 
 ## Goals
-- Learn TCP server fundamentals in Go.
-- Implement bounded concurrency with a worker pool.
-- Build a custom HTTP request parser.
-- Add security and reliability features incrementally.
+- Demonstrate parser-integrated WAF inspection.
+- Compare MTWS against a traditional Nginx + ModSecurity split-proxy stack.
+- Enforce strict HTTP normalization and bounded concurrency.
+- Provide production-demonstration controls: config, graceful shutdown,
+  readiness, metrics, deadlines, TLS option, and hardened containers.
 
 ## Current Status
-- TCP listener and connection accept loop are in place.
-- Worker pool skeleton is implemented.
-- Basic connection handling exists.
-- HTTP parser package and parser tests are being developed.
+- Raw TCP listener, worker pool, custom parser, router, and response writer are implemented.
+- In-parser WAF scanning covers URI, headers, body, chunked bodies, and trailers.
+- Strict parser behavior rejects ambiguous HTTP syntax early.
+- Docker comparison stack is available for MTWS vs Nginx + ModSecurity.
+- Production-demonstration hardening is documented in `docs/production-demo.md`.
 
 ## Project Structure
 ```text
@@ -30,11 +35,19 @@ utils/           Utility helpers (future)
 - Go 1.26+
 
 ## Run
-```bash
+```powershell
 go run ./cmd/server
 ```
 
-The server listens on port 8080 by default.
+The server listens on `:8080` by default.
+
+Useful local checks:
+
+```powershell
+curl http://127.0.0.1:8080/health
+curl http://127.0.0.1:8080/ready
+curl http://127.0.0.1:8080/metrics
+```
 
 ## Docker Comparison Stack
 
@@ -102,11 +115,33 @@ headers, body content, and trailers inside the parser.
 The lab tool normalizes `.http` fixtures to canonical CRLF line endings before
 replay; use `.raw` files when you want byte-exact malformed payload delivery.
 Runtime controls:
+- `MTWS_ADDR` changes the listen address
+- `MTWS_WORKERS` changes the worker goroutine count
+- `MTWS_JOB_QUEUE_SIZE` changes the bounded queue size
+- `MTWS_READ_TIMEOUT` sets the request read deadline
+- `MTWS_WRITE_TIMEOUT` sets the response write deadline
+- `MTWS_IDLE_TIMEOUT` sets the HTTP/1.1 keep-alive idle deadline
+- `MTWS_MAX_KEEPALIVE_REQUESTS` caps requests served on one TCP connection
+- `MTWS_QUEUE_TIMEOUT` sets how long accept waits for worker queue capacity
+- `MTWS_SHUTDOWN_TIMEOUT` sets graceful worker-drain timeout
 - `MTWS_RATE_LIMIT_DISABLED=true` disables the token bucket
 - `MTWS_BENCHMARK_MODE=true` also disables the token bucket for benchmark runs
 - `MTWS_RATE_LIMIT_RATE` and `MTWS_RATE_LIMIT_CAPACITY` override token-bucket settings
 - `MTWS_WAF_POLICY_FILE` points MTWS at a line-based signature policy file
+- `MTWS_TLS_CERT_FILE` and `MTWS_TLS_KEY_FILE` enable TLS when both are set
 The exact HTTP subset is documented in `docs/http-compliance.md`.
+The operational hardening profile is documented in `docs/production-demo.md`.
+Copy `.env.example` when you want a visible deployment configuration template.
+
+Generate a local self-signed TLS certificate for demos:
+```powershell
+go run ./cmd/certgen -force
+```
+
+Run a sustained keep-alive soak benchmark:
+```powershell
+go run ./cmd/lab benchmark -url http://127.0.0.1:8080/health -duration 2m -concurrency 10 -keepalive -json-out experiments/results/soak-mtws.json
+```
 
 ## Scripts
 

@@ -16,6 +16,9 @@ WAF interpret unambiguously.
 - Chunk extensions: accepted and ignored after size parsing
 - Trailers: accepted with strict limits and WAF scanning
 - WAF scan fields: URI, header values, decoded body bytes, trailer values
+- Response connection behavior: HTTP/1.1 keep-alive by default
+- Response connection behavior: `Connection: close` when requested or when max
+  keep-alive requests is reached
 - Limits:
 - Request line: 4096 bytes
 - Header line: 8192 bytes
@@ -37,6 +40,7 @@ WAF interpret unambiguously.
 - Transfer codings other than exactly `chunked`
 - Invalid chunk sizes
 - Invalid chunk terminators
+- Unlimited persistent HTTP/1.1 connection reuse
 - Forbidden trailer fields:
 - `Content-Length`
 - `Host`

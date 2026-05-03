@@ -458,7 +458,7 @@ func readLineLimited(reader *bufio.Reader, maxBytes int) ([]byte, error) {
 				return nil, fmt.Errorf("incomplete line")
 			}
 			if err == io.EOF {
-				return nil, fmt.Errorf("unexpected end of request")
+				return nil, io.EOF
 			}
 			return nil, err
 		}

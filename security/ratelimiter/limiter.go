@@ -13,17 +13,28 @@ type bucket struct {
 }
 
 type Limiter struct {
-	mu       sync.Mutex
-	buckets  map[string]*bucket
-	rate     float64
-	capacity float64
+	mu          sync.Mutex
+	buckets     map[string]*bucket
+	rate        float64
+	capacity    float64
+	bucketTTL   time.Duration
+	lastCleanup time.Time
 }
 
 func New(rate float64, capacity float64) *Limiter {
+	return NewWithTTL(rate, capacity, 10*time.Minute)
+}
+
+func NewWithTTL(rate float64, capacity float64, bucketTTL time.Duration) *Limiter {
+	if bucketTTL <= 0 {
+		bucketTTL = 10 * time.Minute
+	}
 	return &Limiter{
-		buckets:  make(map[string]*bucket),
-		rate:     rate,
-		capacity: capacity,
+		buckets:     make(map[string]*bucket),
+		rate:        rate,
+		capacity:    capacity,
+		bucketTTL:   bucketTTL,
+		lastCleanup: time.Now(),
 	}
 }
 
@@ -33,9 +44,11 @@ func (l *Limiter) Allow(key string) bool {
 	l.mu.Lock()
 	defer l.mu.Unlock()
 
+	l.cleanupExpiredBuckets(now)
+
 	b, ok := l.buckets[key]
 
-	//New bucket
+	// New bucket.
 	if !ok {
 		l.buckets[key] = &bucket{
 			tokens:     l.capacity - 1,
@@ -44,7 +57,7 @@ func (l *Limiter) Allow(key string) bool {
 		return true
 	}
 
-	//Refill
+	// Refill.
 	elapsed := now.Sub(b.lastRefill).Seconds()
 	b.tokens += elapsed * l.rate
 	b.lastRefill = now
@@ -58,4 +71,18 @@ func (l *Limiter) Allow(key string) bool {
 	}
 	b.tokens -= 1
 	return true
+}
+
+func (l *Limiter) cleanupExpiredBuckets(now time.Time) {
+	if now.Sub(l.lastCleanup) < l.bucketTTL/2 {
+		return
+	}
+
+	expiresBefore := now.Add(-l.bucketTTL)
+	for key, b := range l.buckets {
+		if b.lastRefill.Before(expiresBefore) {
+			delete(l.buckets, key)
+		}
+	}
+	l.lastCleanup = now
 }

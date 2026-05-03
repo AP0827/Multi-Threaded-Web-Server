@@ -6,6 +6,7 @@ import (
 	"net"
 	"strings"
 	"testing"
+	"time"
 )
 
 func TestHandleConnectionRoutesParsedRequest(t *testing.T) {
@@ -28,7 +29,7 @@ func TestHandleConnectionRoutesParsedRequest(t *testing.T) {
 		HandleConnection(serverConn, router)
 	}()
 
-	rawRequest := "GET /health HTTP/1.1\r\nHost: localhost\r\n\r\n"
+	rawRequest := "GET /health HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n"
 	if _, err := clientConn.Write([]byte(rawRequest)); err != nil {
 		t.Fatalf("write request: %v", err)
 	}
@@ -59,7 +60,7 @@ func TestHandleConnectionRejectsMalformedRequest(t *testing.T) {
 		HandleConnection(serverConn, NewRouter())
 	}()
 
-	rawRequest := "GET /health\r\nHost: localhost\r\n\r\n"
+	rawRequest := "GET /health\r\nHost: localhost\r\nConnection: close\r\n\r\n"
 	if _, err := clientConn.Write([]byte(rawRequest)); err != nil {
 		t.Fatalf("write request: %v", err)
 	}
@@ -87,7 +88,7 @@ func TestHandleConnectionBlocksMaliciousRequest(t *testing.T) {
 		HandleConnection(serverConn, NewRouter())
 	}()
 
-	rawRequest := "GET /?q=UNION%20SELECT HTTP/1.1\r\nHost: localhost\r\n\r\n"
+	rawRequest := "GET /?q=UNION%20SELECT HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n"
 	if _, err := clientConn.Write([]byte(rawRequest)); err != nil {
 		t.Fatalf("write request: %v", err)
 	}
@@ -122,7 +123,7 @@ func TestHandleConnectionRoutesRequestWithQueryString(t *testing.T) {
 		HandleConnection(serverConn, router)
 	}()
 
-	rawRequest := "GET /search?q=harmless HTTP/1.1\r\nHost: localhost\r\n\r\n"
+	rawRequest := "GET /search?q=harmless HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n"
 	if _, err := clientConn.Write([]byte(rawRequest)); err != nil {
 		t.Fatalf("write request: %v", err)
 	}
@@ -140,5 +141,56 @@ func TestHandleConnectionRoutesRequestWithQueryString(t *testing.T) {
 	}
 	if !strings.HasSuffix(response, "matched\n") {
 		t.Fatalf("expected body matched, got %q", response)
+	}
+}
+
+func TestHandleConnectionKeepsHTTP11ConnectionAlive(t *testing.T) {
+	serverConn, clientConn := net.Pipe()
+	defer clientConn.Close()
+
+	router := NewRouter()
+	router.Handle("/health", func(w *ResponseWriter, req *mtwshttp.Request) {
+		if err := w.WriteText(StatusOK, "ok\n"); err != nil {
+			t.Fatalf("write response: %v", err)
+		}
+	})
+
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		HandleConnectionWithOptions(serverConn, router, ConnectionOptions{
+			MaxRequestsPerConnection: 2,
+			IdleTimeout:              time.Second,
+		})
+	}()
+
+	rawRequests := strings.Join([]string{
+		"GET /health HTTP/1.1\r\nHost: localhost\r\n\r\n",
+		"GET /health HTTP/1.1\r\nHost: localhost\r\n\r\n",
+	}, "")
+	writeDone := make(chan error, 1)
+	go func() {
+		_, err := clientConn.Write([]byte(rawRequests))
+		writeDone <- err
+	}()
+
+	responseBytes, err := io.ReadAll(clientConn)
+	if err != nil {
+		t.Fatalf("read response: %v", err)
+	}
+	if err := <-writeDone; err != nil {
+		t.Fatalf("write requests: %v", err)
+	}
+	<-done
+
+	response := string(responseBytes)
+	if got := strings.Count(response, "HTTP/1.1 200 OK"); got != 2 {
+		t.Fatalf("expected two 200 responses on one connection, got %d in %q", got, response)
+	}
+	if !strings.Contains(response, "Connection: keep-alive") {
+		t.Fatalf("expected first response to keep the connection alive, got %q", response)
+	}
+	if !strings.Contains(response, "Connection: close") {
+		t.Fatalf("expected final response to close after max requests, got %q", response)
 	}
 }
