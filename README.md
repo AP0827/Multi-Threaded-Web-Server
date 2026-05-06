@@ -177,6 +177,25 @@ chmod +x scripts/*.sh scripts/load/*.sh
 
 **Sustained Test** – Steady traffic over time:
 
+Mixed status test (valid + malformed + burst traffic together):
+```bash
+./scripts/load/mixed_test.sh
+```
+
+Custom mixed test:
+```bash
+./scripts/load/mixed_test.sh http://localhost:8080/ 90 15 60 30 262144
+```
+
+Arguments:
+- URL (default: http://localhost:8080/)
+- valid requests (default: 90)
+- malformed requests (default: 15)
+- burst requests (default: 60)
+- concurrency (default: 30)
+- burst body size in bytes (default: 262144)
+
+Sustained test (steady traffic over time):
 ```bash
 ./scripts/load/sustained_test.sh                    # Defaults: 10 sec, 20 req/sec
 ./scripts/load/sustained_test.sh URL DURATION RPS  # Custom: URL, duration (sec), requests/sec

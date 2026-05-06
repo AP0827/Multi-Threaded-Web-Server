@@ -85,11 +85,9 @@ func serve(ctx context.Context, l net.Listener, jobs chan<- pool.Job, router *co
 		}
 		metrics.IncAcceptedConnection()
 
-		remoteAddr := conn.RemoteAddr().String()
-		clientIP, _, err := net.SplitHostPort(remoteAddr)
-		if err != nil {
-			clientIP = remoteAddr
-		}
+		handleConnection(conn, jobs)
+	}
+}
 
 		if !cfg.RateLimitEnabled || limiter.Allow(clientIP) {
 			job := pool.Job{
@@ -118,6 +116,8 @@ func serve(ctx context.Context, l net.Listener, jobs chan<- pool.Job, router *co
 			conn.Close()
 			continue
 		}
+		return
+	}
 
 		metrics.IncRateLimited()
 		log.Printf("Status 429: request blocked by token bucket policy for %s", clientIP)
@@ -127,7 +127,38 @@ func serve(ctx context.Context, l net.Listener, jobs chan<- pool.Job, router *co
 		}).WriteText(core.StatusTooManyRequests, ""); err != nil {
 			log.Println("Write error:", err)
 		}
-		conn.Close()
+	}
+}
+
+func remoteIP(conn net.Conn) string {
+	remoteAddr := conn.RemoteAddr().String()
+	clientIP, _, err := net.SplitHostPort(remoteAddr)
+	if err != nil {
+		return remoteAddr
+	}
+	return clientIP
+}
+
+func writeResponseAndClose(conn net.Conn, statusCode int, body string) error {
+	response := fmt.Sprintf("HTTP/1.1 %d %s\r\n", statusCode, httpStatusText(statusCode)) +
+		"Content-Type: text/plain\r\n" +
+		fmt.Sprintf("Content-Length: %d\r\n", len(body)) +
+		"\r\n" +
+		body
+
+	_, err := conn.Write([]byte(response))
+	conn.Close()
+	return err
+}
+
+func httpStatusText(statusCode int) string {
+	switch statusCode {
+	case 429:
+		return "Too Many Requests"
+	case 503:
+		return "Service Unavailable"
+	default:
+		return "OK"
 	}
 }
 
