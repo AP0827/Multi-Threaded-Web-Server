@@ -2,6 +2,7 @@ package main
 
 import (
 	"bufio"
+	"context"
 	"encoding/json"
 	"errors"
 	"flag"
@@ -50,6 +51,7 @@ func printUsage() {
 	fmt.Println("Usage:")
 	fmt.Println("  go run ./cmd/lab compare -mtws 127.0.0.1:8080 -proxy 127.0.0.1:8081")
 	fmt.Println("  go run ./cmd/lab benchmark -url http://127.0.0.1:8080/health -requests 200 -concurrency 10")
+	fmt.Println("  go run ./cmd/lab benchmark -url http://127.0.0.1:8080/health -duration 2m -concurrency 10 -keepalive")
 	fmt.Println("  go run ./cmd/lab summarize -glob \"experiments/results/benchmark-*.json\"")
 }
 
@@ -114,6 +116,7 @@ func runBenchmark(args []string) error {
 	targetURL := fs.String("url", "http://127.0.0.1:8080/health", "benchmark target URL")
 	requests := fs.Int("requests", 200, "total number of requests")
 	concurrency := fs.Int("concurrency", 10, "number of concurrent workers")
+	duration := fs.Duration("duration", 0, "optional time-boxed soak duration; when set, requests is ignored")
 	timeout := fs.Duration("timeout", 5*time.Second, "per-request timeout")
 	keepAlive := fs.Bool("keepalive", false, "reuse HTTP connections during benchmarking")
 	jsonOut := fs.String("json-out", "", "optional file path for JSON results")
@@ -121,7 +124,7 @@ func runBenchmark(args []string) error {
 		return err
 	}
 
-	if *requests <= 0 {
+	if *duration <= 0 && *requests <= 0 {
 		return errors.New("requests must be > 0")
 	}
 	if *concurrency <= 0 {
@@ -141,50 +144,96 @@ func runBenchmark(args []string) error {
 
 	start := time.Now()
 	var mu sync.Mutex
-	jobs := make(chan struct{}, *requests)
 	var wg sync.WaitGroup
 
-	for i := 0; i < *concurrency; i++ {
-		wg.Add(1)
-		go func() {
-			defer wg.Done()
-			for range jobs {
-				reqStart := time.Now()
-				resp, err := client.Get(*targetURL)
-				latency := time.Since(reqStart)
+	record := func(latency time.Duration, statusCode int, err error) {
+		mu.Lock()
+		defer mu.Unlock()
+		latencies = append(latencies, latency)
+		if err != nil {
+			errCount++
+			return
+		}
+		statusCounts[statusCode]++
+	}
 
-				mu.Lock()
-				latencies = append(latencies, latency)
-				if err != nil {
-					errCount++
-					mu.Unlock()
-					continue
+	issue := func() {
+		reqStart := time.Now()
+		resp, err := client.Get(*targetURL)
+		latency := time.Since(reqStart)
+		if err != nil {
+			record(latency, 0, err)
+			return
+		}
+		_, _ = io.Copy(io.Discard, resp.Body)
+		resp.Body.Close()
+		record(latency, resp.StatusCode, nil)
+	}
+
+	if *duration > 0 {
+		ctx, cancel := context.WithTimeout(context.Background(), *duration)
+		defer cancel()
+
+		for i := 0; i < *concurrency; i++ {
+			wg.Add(1)
+			go func() {
+				defer wg.Done()
+				for {
+					select {
+					case <-ctx.Done():
+						return
+					default:
+						issue()
+					}
 				}
-				statusCounts[resp.StatusCode]++
-				mu.Unlock()
+			}()
+		}
+	} else {
+		jobs := make(chan struct{}, *requests)
+		for i := 0; i < *concurrency; i++ {
+			wg.Add(1)
+			go func() {
+				defer wg.Done()
+				for range jobs {
+					issue()
+				}
+			}()
+		}
 
-				_, _ = io.Copy(io.Discard, resp.Body)
-				resp.Body.Close()
-			}
-		}()
+		for i := 0; i < *requests; i++ {
+			jobs <- struct{}{}
+		}
+		close(jobs)
 	}
 
-	for i := 0; i < *requests; i++ {
-		jobs <- struct{}{}
-	}
-	close(jobs)
 	wg.Wait()
+
+	completedRequests := len(latencies)
+	configuredRequests := *requests
+	if *duration > 0 {
+		configuredRequests = completedRequests
+	}
 
 	elapsed := time.Since(start)
 	summary := summarizeLatencies(latencies)
+	throughput := 0.0
+	if elapsed > 0 {
+		throughput = float64(completedRequests) / elapsed.Seconds()
+	}
 
 	fmt.Println("Benchmark")
 	fmt.Printf("URL: %s\n", *targetURL)
-	fmt.Printf("Requests: %d\n", *requests)
+	if *duration > 0 {
+		fmt.Println("Mode: soak")
+		fmt.Printf("Duration target: %s\n", *duration)
+	} else {
+		fmt.Println("Mode: fixed-requests")
+	}
+	fmt.Printf("Requests: %d\n", completedRequests)
 	fmt.Printf("Concurrency: %d\n", *concurrency)
 	fmt.Printf("Keep-alive: %t\n", *keepAlive)
 	fmt.Printf("Elapsed: %s\n", elapsed)
-	fmt.Printf("Throughput: %.2f req/s\n", float64(len(latencies))/elapsed.Seconds())
+	fmt.Printf("Throughput: %.2f req/s\n", throughput)
 	fmt.Printf("Latency avg: %s\n", summary.Average)
 	fmt.Printf("Latency min: %s\n", summary.Min)
 	fmt.Printf("Latency p50: %s\n", summary.P50)
@@ -207,11 +256,12 @@ func runBenchmark(args []string) error {
 		report := benchmarkReport{
 			GeneratedAt: time.Now().UTC(),
 			URL:         *targetURL,
-			Requests:    *requests,
+			Requests:    configuredRequests,
 			Concurrency: *concurrency,
+			Duration:    durationString(*duration),
 			KeepAlive:   *keepAlive,
 			Elapsed:     elapsed.String(),
-			Throughput:  float64(len(latencies)) / elapsed.Seconds(),
+			Throughput:  throughput,
 			Errors:      errCount,
 			StatusCodes: statusCounts,
 			Latency: latencyStats{
@@ -607,6 +657,7 @@ type benchmarkReport struct {
 	URL         string       `json:"url"`
 	Requests    int          `json:"requests"`
 	Concurrency int          `json:"concurrency"`
+	Duration    string       `json:"duration,omitempty"`
 	KeepAlive   bool         `json:"keep_alive"`
 	Elapsed     string       `json:"elapsed"`
 	Throughput  float64      `json:"throughput"`
@@ -622,6 +673,13 @@ type latencyStats struct {
 	P95     string `json:"p95"`
 	P99     string `json:"p99"`
 	Max     string `json:"max"`
+}
+
+func durationString(duration time.Duration) string {
+	if duration <= 0 {
+		return ""
+	}
+	return duration.String()
 }
 
 func writeJSON(path string, value interface{}) error {

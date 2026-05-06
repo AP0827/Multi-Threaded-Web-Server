@@ -8,13 +8,27 @@ services:
         BIN_NAME: mtws
     container_name: mtws-app
     environment:
+      MTWS_ADDR: :8080
+      MTWS_READ_TIMEOUT: 5s
+      MTWS_WRITE_TIMEOUT: 5s
+      MTWS_IDLE_TIMEOUT: 30s
+      MTWS_MAX_KEEPALIVE_REQUESTS: "100"
+      MTWS_QUEUE_TIMEOUT: 250ms
+      MTWS_SHUTDOWN_TIMEOUT: 10s
+      MTWS_STATIC_DIR: public
       MTWS_WAF_POLICY_FILE: /etc/mtws/waf-policy.txt
     healthcheck:
-      test: ["CMD", "wget", "-qO-", "http://127.0.0.1:8080/health"]
+      test: ["CMD", "wget", "-qO-", "http://127.0.0.1:8080/ready"]
       interval: 10s
       timeout: 3s
       retries: 5
       start_period: 5s
+    restart: unless-stopped
+    read_only: true
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
     ports:
       - "8080:8080"
     networks:
@@ -34,6 +48,12 @@ services:
       timeout: 3s
       retries: 5
       start_period: 5s
+    restart: unless-stopped
+    read_only: true
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
     networks:
       - mtws-net
 
@@ -55,6 +75,7 @@ services:
       DETECTION_PARANOIA: "1"
     ports:
       - "8081:8080"
+    restart: unless-stopped
     healthcheck:
       test: ["CMD", "wget", "-qO-", "http://127.0.0.1:8080/healthz"]
       interval: 10s

@@ -1,6 +1,7 @@
 package core
 
 import (
+	mtwshttp "MTWS/http"
 	"encoding/json"
 	"log"
 	"net"
@@ -16,6 +17,17 @@ type securityLogEntry struct {
 	RuleID     string `json:"rule_id,omitempty"`
 	Status     int    `json:"status"`
 	Reason     string `json:"reason,omitempty"`
+}
+
+type accessLogEntry struct {
+	Time       string  `json:"time"`
+	Event      string  `json:"event"`
+	RemoteAddr string  `json:"remote_addr"`
+	Method     string  `json:"method"`
+	Path       string  `json:"path"`
+	Status     int     `json:"status"`
+	Bytes      int     `json:"bytes"`
+	DurationMS float64 `json:"duration_ms"`
 }
 
 func logSecurityEvent(conn net.Conn, field string, pattern string, ruleID string, status int) {
@@ -40,7 +52,24 @@ func logParseReject(conn net.Conn, reason string, status int) {
 	})
 }
 
-func writeStructuredLog(entry securityLogEntry) {
+func logAccessEvent(conn net.Conn, req *mtwshttp.Request, status int, bytes int, duration time.Duration) {
+	if req == nil {
+		return
+	}
+
+	writeStructuredLog(accessLogEntry{
+		Time:       time.Now().UTC().Format(time.RFC3339Nano),
+		Event:      "access",
+		RemoteAddr: remoteAddr(conn),
+		Method:     req.Method(),
+		Path:       req.Path(),
+		Status:     status,
+		Bytes:      bytes,
+		DurationMS: float64(duration.Microseconds()) / 1000,
+	})
+}
+
+func writeStructuredLog(entry any) {
 	data, err := json.Marshal(entry)
 	if err != nil {
 		log.Printf("structured_log_error=%v", err)

@@ -1,6 +1,9 @@
-# MTWS – Multi-Threaded Web Server
+# MTWS - Multi Threaded Web Server (Go)
 
-A Go-based HTTP server project focused on HTTP/1.1 parsing, bounded concurrency, rate limiting, and security-oriented request handling.
+MTWS is a research-oriented HTTP/1.1 server written in Go on top of raw TCP
+sockets. Its core thesis is that WAF inspection should happen inside the HTTP
+parser itself, so the security engine and the application server cannot parse
+ambiguous requests differently.
 
 ## Features
 
@@ -38,22 +41,24 @@ A Go-based HTTP server project focused on HTTP/1.1 parsing, bounded concurrency,
 go run ./cmd/server
 ```
 
-The server listens on `localhost:8080` by default. Test with:
+The server listens on `:8080` by default.
 
-```bash
-curl http://localhost:8080/health
+Useful local checks:
+
+```powershell
+curl http://127.0.0.1:8080/health
+curl http://127.0.0.1:8080/ready
+curl http://127.0.0.1:8080/metrics
+curl http://127.0.0.1:8080/static/
 ```
 
-### Run Tests
+## Docker Comparison Stack
 
-```bash
-go test ./...
-```
+Sprint 3 introduces a two-path comparison environment:
+- `mtws` on `http://localhost:8080`
+- `nginx + ModSecurity CRS` proxying to a separate standard-library backend on `http://localhost:8081`
 
-## Multi-Stack Deployment
-
-Compare MTWS against nginx + ModSecurity CRS by launching both services:
-
+Start both services:
 ```bash
 docker compose up --build
 ```
@@ -104,15 +109,56 @@ go run ./cmd/lab benchmark -url http://127.0.0.1:8080/health -requests 200 -conc
 go run ./cmd/lab benchmark -url http://127.0.0.1:8081/health -requests 200 -concurrency 10
 ```
 
-**Payload Library:**
-- Raw attack payloads: `experiments/payloads/`
-- Structured results: `experiments/results/`
-- Experiment workflow: `docs/sprint4-experiments.md`
-- Final report template: `docs/final-report-template.md`
+Starter discrepancy and attack payloads live in `experiments/payloads/`.
+Structured results can be written into `experiments/results/`.
+The detailed experiment workflow is documented in `docs/sprint4-experiments.md`,
+and the final write-up template is in `docs/final-report-template.md`.
+MTWS now enforces required `Host` semantics, rejects unsupported
+transfer codings, supports strict `Transfer-Encoding: chunked`, and scans URI,
+headers, body content, and trailers inside the parser.
+The lab tool normalizes `.http` fixtures to canonical CRLF line endings before
+replay; use `.raw` files when you want byte-exact malformed payload delivery.
+Runtime controls:
+- `MTWS_ADDR` changes the listen address
+- `MTWS_WORKERS` changes the worker goroutine count
+- `MTWS_JOB_QUEUE_SIZE` changes the bounded queue size
+- `MTWS_READ_TIMEOUT` sets the request read deadline
+- `MTWS_WRITE_TIMEOUT` sets the response write deadline
+- `MTWS_IDLE_TIMEOUT` sets the HTTP/1.1 keep-alive idle deadline
+- `MTWS_MAX_KEEPALIVE_REQUESTS` caps requests served on one TCP connection
+- `MTWS_QUEUE_TIMEOUT` sets how long accept waits for worker queue capacity
+- `MTWS_STATIC_DIR` sets the fixed directory served under `/static/`
+- `MTWS_SHUTDOWN_TIMEOUT` sets graceful worker-drain timeout
+- `MTWS_RATE_LIMIT_DISABLED=true` disables the token bucket
+- `MTWS_BENCHMARK_MODE=true` also disables the token bucket for benchmark runs
+- `MTWS_RATE_LIMIT_RATE` and `MTWS_RATE_LIMIT_CAPACITY` override token-bucket settings
+- `MTWS_WAF_POLICY_FILE` points MTWS at a line-based signature policy file
+- `MTWS_TLS_CERT_FILE` and `MTWS_TLS_KEY_FILE` enable TLS when both are set
+The exact HTTP subset is documented in `docs/http-compliance.md`.
+The operational hardening profile is documented in `docs/production-demo.md`.
+Copy `.env.example` when you want a visible deployment configuration template.
 
-**Fixture Format:**
-- `.http` files are normalized to CRLF before replay (safe for malformed payloads)
-- `.raw` files are replayed byte-exact (use for strict malformat testing)
+Generate a local self-signed TLS certificate for demos:
+```powershell
+go run ./cmd/certgen -force
+```
+
+Run a sustained keep-alive soak benchmark:
+```powershell
+go run ./cmd/lab benchmark -url http://127.0.0.1:8080/health -duration 2m -concurrency 10 -keepalive -json-out experiments/results/soak-mtws.json
+```
+
+## Scripts
+
+Make scripts executable once:
+```bash
+chmod +x scripts/run_server.sh scripts/load/*.sh
+```
+
+Run server via script:
+```bash
+./scripts/run_server.sh
+```
 
 ### Load Testing Scripts
 
