@@ -1,0 +1,35 @@
+name: MTWS CI
+
+on:
+  push:
+    branches:
+      - main
+      - master
+  pull_request:
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Go
+        uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+
+      - name: Format check
+        run: test -z "$(gofmt -l .)"
+
+      - name: Test
+        run: go test ./...
+
+      - name: Build MTWS
+        run: go build ./cmd/server
+
+      - name: Build lab tool
+        run: go build ./cmd/lab
+
+      - name: Build cert generator
+        run: go build ./cmd/certgen

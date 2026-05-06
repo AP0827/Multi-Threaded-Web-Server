@@ -1,0 +1,8 @@
+services:
+  mtws:
+    environment:
+      MTWS_BENCHMARK_MODE: "true"
+
+  backend:
+    environment:
+      MTWS_BENCHMARK_MODE: "true"

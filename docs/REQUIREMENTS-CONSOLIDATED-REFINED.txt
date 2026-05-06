@@ -1,0 +1,511 @@
+MTWS - MULTITHREADED SECURE HTTP SERVER
+Consolidated Requirements for Academic Submission
+May 2026
+
+==============================================
+1. PROJECT OVERVIEW
+==============================================
+
+MTWS is an educational HTTP/1.1 server implemented in Go, designed to demonstrate network
+security concepts and HTTP compliance through:
+● Custom HTTP/1.1 parser with strict RFC 7230-7231 compliance
+● Web Application Firewall (WAF) with signature-based threat detection
+● Per-IP token bucket rate limiting for DoS protection
+● Worker pool concurrency with buffered job queue architecture
+● Side-by-side security benchmarking against nginx + ModSecurity
+● Load testing and performance metrics collection
+
+Target Deployment: Single-machine classroom labs, security research, educational demonstrations.
+
+
+==============================================
+2. HARDWARE REQUIREMENTS
+==============================================
+
+Development & Testing Environment
+● Processor: Dual-core CPU (2.0 GHz minimum); Intel i5 or AMD Ryzen 3 equivalent recommended
+● Memory: 2 GB RAM minimum; 256 MB available for MTWS process
+● Storage: 50 MB for binary, policies, and logs
+● Network: 100 Mbps Ethernet or WiFi (loopback testing acceptable)
+● Operating System: Ubuntu 20.04 LTS or later, macOS 10.15+, Windows 10+ (WSL2)
+● Load Target: 1-10 concurrent requests, unit testing
+
+Classroom Lab Deployment (Multiple Instances)
+● Processor: Intel Core i5 (8th Gen or higher) / AMD Ryzen 5 equivalent
+● Memory: Minimum 4-8 GB RAM; 500 MB available per MTWS instance
+● Storage: 256 GB SSD minimum; 500 GB SSD recommended for extended benchmark retention
+● Network: Gigabit Ethernet interface with static IP (1 Gbps minimum)
+● Operating System: Ubuntu 20.04 LTS or later
+● Load Target: 50-200 concurrent requests per instance, daily comparative benchmarking
+
+Extended Benchmarking & Stress Testing (24h+)
+● Processor: 8-16 cores @ ≥3.0 GHz
+● Memory: 8-16 GB RAM
+● Storage: 1 GB minimum (for JSON benchmark results, logs, and time-series data)
+● Network: 1-10 Gbps Ethernet (1 Gbps sufficient for 50k+ RPS)
+● Operating System: Ubuntu 20.04 LTS (production Linux kernel recommended)
+● Load Target: 1000+ concurrent connections, 50k+ requests per second
+● Additional Requirements: UPS backup for 24×7 operation; rack placement for thermal management
+
+Network Environment
+● Departmental subnets with Gigabit Ethernet connectivity
+● Average ping latency < 10 ms within local campus network
+● Access control via IP-based firewall rules and VLAN segregation
+● Static IP assignment for server instances
+
+Storage Requirements by Scale
+Scale           | Estimated Annual Storage | Description
+5 systems       | ~500 MB/year             | MVP or single lab testing
+10 systems      | ~1 GB/year               | Includes metrics, logs, summary tables
+50 systems      | ~5 GB/year               | Full departmental deployment
+100+ systems    | ~10 GB+/year             | Scalable with compression and data retention policies
+
+
+==============================================
+3. SOFTWARE REQUIREMENTS
+==============================================
+
+Software Stack
+Component                  | Specification
+Operating System           | Ubuntu 20.04 LTS or later (primary); macOS 10.15+, Windows 10+ supported
+Runtime Environment        | Go 1.26.1 or later
+Build System              | Standard Go toolchain (go build, go test)
+Parser & HTTP             | Go standard library (net, bufio, strings)
+Concurrency               | Go goroutines and channels (stdlib)
+Logging                   | Go standard log package
+Security Scanning         | Aho-Corasick automaton (custom implementation)
+Rate Limiting             | Token bucket with sync.Mutex (stdlib)
+Testing                   | go test framework + fuzz testing
+Container Support (Opt.)  | Docker + Docker Compose
+Load Testing Tools        | Lab tool (cmd/lab) for benchmarking
+
+Core Go Standard Library Modules
+● net – TCP/IP socket operations, connection handling
+● bufio – Buffered I/O for HTTP request/response parsing
+● strings, bytes – String manipulation and parsing utilities
+● time – Timer operations, read deadlines, rate limiter timing
+● sync – Mutex synchronization for rate limiter thread safety
+● log – Structured logging to stdout/stderr
+● os, strconv – Environment variable configuration parsing
+● testing – Unit and fuzz test framework
+
+Configuration & Environment Variables
+Variable                      | Default Value              | Purpose
+MTWS_LISTEN_ADDR             | :8080                      | Server bind address and port
+MTWS_WORKER_POOL_SIZE        | 10                         | Number of concurrent worker goroutines
+MTWS_JOB_QUEUE_SIZE          | 200                        | Buffered job queue capacity
+MTWS_RATE_LIMIT_RATE         | 5.0 tokens/sec             | Token bucket refill rate per IP
+MTWS_RATE_LIMIT_CAPACITY     | 10.0 tokens                | Maximum burst capacity per IP
+MTWS_RATE_LIMIT_DISABLED     | false                      | Disable rate limiting globally
+MTWS_BENCHMARK_MODE          | false                      | Enable benchmark tuning (disables rate limit)
+MTWS_WAF_POLICY_FILE         | security/waf/default-policy.txt | Path to WAF signature policy file
+
+Build & Deployment Commands
+● go build -o mtws ./cmd/server – Compile native binary
+● go test ./... – Run all unit tests
+● go test -fuzz FuzzParseRequest ./http – Run fuzz tests
+● GOOS=linux GOARCH=amd64 go build -o mtws ./cmd/server – Cross-compile for Linux
+● docker build -t mtws:latest . – Build Docker image
+● docker compose up --build – Deploy multi-service stack (MTWS + nginx+ModSecurity)
+
+Key Characteristics
+● Zero external dependencies – Uses only Go standard library
+● Single static binary – Simplified deployment, no runtime dependencies
+● Multi-platform support – Linux (x86-64, ARM64), macOS (Intel/Apple Silicon), Windows
+● Containerization ready – Dockerfile and Docker Compose configs provided
+
+
+==============================================
+4. FUNCTIONAL REQUIREMENTS
+==============================================
+
+Network Protocol & Connection Handling
+● TCP Connection Acceptance: Server accepts incoming TCP connections on configurable port
+  (default 8080). Connections handed off to worker pool for HTTP request processing.
+  Status: Implemented. Evidence: cmd/server/main.go (net.Listen, Accept loop)
+  
+● HTTP/1.1 Request Parsing: Strict compliance with RFC 7230-7231. Parses request line,
+  headers, body (Content-Length and Transfer-Encoding: chunked), and optional trailers.
+  Size limits enforced: request line 4096 bytes, header line 8192 bytes, max 64 headers,
+  body 1 MiB. Fail-closed approach: rejects ambiguous requests with 400 Bad Request.
+  Status: Implemented. Evidence: http/parser.go, http/request.go + parser_test.go,
+  parser_fuzz_test.go
+
+● HTTP Response Generation: Generates responses with appropriate status codes (200 OK,
+  400 Bad Request, 403 Forbidden, 404 Not Found, 500 Internal Server Error) and headers.
+  Automatic Content-Length computation; optional Date and Content-Type headers.
+  Status: Implemented. Evidence: core/response.go
+
+● Request Routing: Exact path matching to registered handlers. Returns 404 Not Found
+  if path not in routes. Supports dynamic handler registration at startup.
+  Status: Implemented. Evidence: core/router.go
+
+● Connection Closure: Closes socket after response sent. Clean resource cleanup via
+  Go defer mechanisms. Handles client-initiated closes gracefully.
+  Status: Implemented. Evidence: core/connection.go (defer conn.Close())
+
+Concurrency & Job Queue Architecture
+● Worker Pool: Fixed-size pool of goroutines (configurable, default 10 workers) for
+  bounded concurrency control. Prevents goroutine explosion under high load. Configurable
+  via MTWS_WORKER_POOL_SIZE and MTWS_JOB_QUEUE_SIZE environment variables.
+  Status: Implemented. Evidence: pool/pool.go, cmd/server/main.go
+
+● Buffered Job Queue: Accepts connection jobs into buffered channel (configurable,
+  default capacity 200). Provides natural backpressure: listener blocks when queue full,
+  workers block when queue empty. No unbounded goroutine creation.
+  Status: Implemented. Evidence: pool/pool.go (Job struct, StartWorkerPool function)
+
+● Connection-to-Job Dispatch: Listener accepts connection, extracts client IP, performs
+  rate limiter decision, posts Job to queue if allowed, or closes connection if denied.
+  Status: Implemented. Evidence: cmd/server/main.go (Accept loop + rate limiter check)
+
+Security & Rate Limiting
+● Per-IP Rate Limiting (Token Bucket): One token bucket per unique client IP.
+  Configurable refill rate (default 5.0 tokens/sec) and burst capacity (default 10.0 tokens).
+  Decision logic: if tokens ≥ 1, deduct 1 and allow request; else deny and close connection.
+  Disable via environment variables MTWS_RATE_LIMIT_DISABLED or MTWS_BENCHMARK_MODE.
+  Status: Implemented. Evidence: security/ratelimiter/limiter.go
+
+● WAF (Web Application Firewall): Aho-Corasick automaton scans all request fields:
+  URI, header names/values, decoded body, trailers. Signatures loaded from policy file
+  (default: security/waf/default-policy.txt, one pattern per line). Pattern match triggers
+  SecurityError, returns 403 Forbidden, logs security event. Signature file reloadable.
+  Status: Implemented. Evidence: security/waf/automaton.go, security/waf/policy.go
+
+● Malformed Request Rejection: Detects and rejects invalid syntax, duplicate headers,
+  both Content-Length and Transfer-Encoding, invalid chunks, missing Host header.
+  Returns 400 Bad Request with appropriate error logging.
+  Status: Implemented. Evidence: http/parser.go
+
+● Connection Timeout: Enforces 5-second read deadline (anti-Slowloris protection).
+  On timeout, closes connection and logs event. Prevents resource exhaustion attacks.
+  Status: Implemented. Evidence: core/connection.go (conn.SetReadDeadline)
+
+Configuration, Initialization & Logging
+● Environment Variable Configuration: All configuration via environment variables
+  (12-factor application pattern). Sensible defaults provided; warnings logged for
+  invalid values (e.g., negative rates). No hardcoded secrets or credentials.
+  Status: Implemented. Evidence: config/config.go
+
+● WAF Policy Loading: Loads WAF signatures from text file at startup. Builds
+  Aho-Corasick automaton before accepting connections. Supports pattern count logging
+  and runtime configuration. Configurable via MTWS_WAF_POLICY_FILE.
+  Status: Implemented. Evidence: security/waf/policy.go
+
+● Startup Logging: Logs server address, port, worker pool size, job queue size,
+  rate limiter config (rate, capacity, enabled/disabled status), WAF pattern count,
+  and benchmark mode status. Provides visibility into configuration.
+  Status: Implemented. Evidence: cmd/server/main.go (startup log messages)
+
+● Request Logging: Logs each request with client IP:port, HTTP method, request path,
+  HTTP version, and timestamp. Includes remote address for audit trail.
+  Status: Implemented. Evidence: core/connection.go (log.Printf calls)
+
+● Security Event Logging: Logs WAF matches: client IP, matched pattern, rule ID,
+  scanned field, HTTP status code (403), timestamp. Supports security analysis.
+  Status: Implemented. Evidence: core/connection.go (logSecurityEvent function)
+
+● Parse Rejection Logging: Logs parsing errors: client IP, specific error reason,
+  HTTP status code (400), timestamp. Aids in debugging malformed requests.
+  Status: Implemented. Evidence: core/connection.go (logParseReject function)
+
+Testing, Benchmarking & Deployment
+● Unit Testing: Comprehensive tests for HTTP parser, WAF automaton, rate limiter,
+  config parsing, and router logic. Invocation: go test ./... Tests verify correctness
+  and edge cases.
+  Status: Implemented. Evidence: *_test.go files throughout codebase
+
+● Fuzz Testing: Fuzz tests for HTTP parser with malformed/random input to detect
+  security regressions and edge cases. Invocation: go test -fuzz FuzzParseRequest ./http
+  Status: Implemented. Evidence: http/parser_fuzz_test.go
+
+● Benchmarking Tool (Lab): Integrated lab tool supporting:
+  ○ Benchmark mode: load test with throughput/latency metrics, concurrent client simulation
+  ○ Compare mode: parsing behavior comparison between MTWS and nginx+ModSecurity
+  ○ Output: JSON results with RPS, latency percentiles (avg, P95, P99), success/failure counts
+  Status: Implemented. Evidence: cmd/lab/main.go, cmd/lab/main_test.go
+
+● Benchmark Payloads: Test payload suite in experiments/payloads/ including:
+  ○ Benign payloads (health checks, simple GET requests)
+  ○ Attack payloads (SQL injection, XSS, path traversal, header injection)
+  ○ Chunked encoding edge cases and HTTP ambiguity scenarios
+  ○ Format: Plain HTTP request files (.http extension)
+  Status: Implemented. Evidence: experiments/payloads/ directory (17+ payload files)
+
+● Docker Support: Dockerfile for containerized deployment. Exposes port 8080.
+  Multi-stage build support. Alpine Linux base for minimal image size.
+  Status: Implemented. Evidence: Dockerfile
+
+● Docker Compose Stack: docker-compose.yml (MTWS + nginx+ModSecurity) and
+  docker-compose.benchmark.yml (benchmark mode overrides). Volume mounts for
+  policies and results. Enables reproducible multi-service testing.
+  Status: Implemented. Evidence: docker-compose.yml, docker-compose.benchmark.yml
+
+● Health Check Handler: /health endpoint returns 200 OK + "healthy" text.
+  Used for container readiness probes and load balancer health checks.
+  Status: Implemented. Evidence: cmd/server/main.go (healthHandler)
+
+● Error Handling: Graceful error responses with appropriate HTTP status codes:
+  400 Bad Request (malformed), 403 Forbidden (WAF), 404 Not Found (route),
+  500 Internal Server Error (unhandled exception). Prevents information leakage.
+  Status: Implemented. Evidence: core/response.go (writeErrorResponse)
+
+
+==============================================
+5. NON-FUNCTIONAL REQUIREMENTS
+==============================================
+
+Performance
+● Metric Collection Latency: < 30 seconds to collect metrics from 100 systems via parallel threads
+● Database Ingestion Rate: > 1000 metrics/sec capacity
+● Query Response Time: < 2 seconds for aggregated dashboard views
+● Average Request Latency: < 100 ms per request under normal load
+● P95/P99 Latency: Stable tail latency with bounded variance under moderate load
+● Connection Overhead: ~10 KB memory per concurrent connection (buffers + structures)
+
+Scalability
+● Concurrent Connections: Seamlessly handle 50-200 concurrent requests per instance
+● Extended Scale: Scale from 5 to 100+ monitored systems without architecture change
+● Single-Machine Limit: ~50k RPS and ~10k concurrent connections (OS tuning required)
+● Memory Efficiency: Worker pool prevents unbounded goroutine creation
+● Horizontal Scaling Ready: Stateless request handling supports multi-instance deployment
+
+Reliability & Availability
+● System Uptime Target: ≥ 99.5% availability (acceptable downtime ~3.6 hours/year)
+● Graceful Degradation: Continue serving valid requests under partial attack/load
+● Error Recovery: Automatic recovery from malformed requests without affecting other connections
+● Long-Running Stability: No memory leaks, no goroutine leaks over 24+ hour stress tests
+● Fault Isolation: Failure in one request does not affect others (stateless processing)
+
+Security
+● DoS Protection: Per-IP rate limiting with token bucket algorithm
+● Injection Prevention: WAF scans all request fields for malicious patterns (SQLi, XSS)
+● Malformed Request Protection: Fail-closed approach rejects ambiguous inputs
+● Credential Security: AES-256 encryption for any stored credentials (future enhancement)
+● Audit Logging: Complete event logging for security events, parse rejections, rate limits
+● Access Control: IP-based firewall rules and VLAN segregation support
+● Encrypted Communication: Ready for TLS/HTTPS (future enhancement)
+
+Maintainability & Usability
+● Single Command Setup: go build -o mtws ./cmd/server
+● Admin Learning Curve: < 1 hour to understand architecture and configure
+● Centralized Configuration: All settings via .env-compatible environment variables
+● Modular Architecture: Clear separation: networking, parsing, security, routing, concurrency
+● Code Organization: Logical package structure (http, core, pool, security, config)
+● Documentation: Inline code comments, design documentation, and specification docs
+● Clean Interfaces: Each module exposes clear, testable public interfaces
+
+Portability & Deployment
+● Cross-Platform: Linux (x86-64, ARM64), macOS (Intel/Apple Silicon), Windows 10+ supported
+● Container Ready: Docker and Docker Compose configurations provided
+● No External Dependencies: Compiles to single static binary; deploys anywhere
+● Daily Backups: Supports automated backup scheduling
+● Recovery Objectives: RTO < 4 hours, RPO < 24 hours for restoration
+
+Extensibility & Standards
+● Plugin-Ready Architecture: Modular security scanning (WAF framework extensible)
+● JSONB Support: Benchmark results exported as JSON for further processing
+● Database Normalization: 3NF compliance (relevant for future metrics storage)
+● Standards Compliance: RFC 7230-7231 (HTTP/1.1), OWASP Top 10 awareness
+● GDPR Ready: No personally identifiable information (PII) stored; audit logging compliant
+● Backward Compatibility: Stable environment variable interface across versions
+
+Observability & Monitoring
+● Event Logging: Comprehensive logging of requests, security events, parsing errors
+● Performance Metrics: JSON export of benchmark results (throughput, latency, success rate)
+● Health Checks: /health endpoint for automated monitoring and orchestration
+● Audit Trail: Complete logging of rate limit events and WAF matches
+● Error Visibility: Clear error messages logged with context (client IP, field, rule)
+
+
+==============================================
+6. DATA FLOW & ARCHITECTURE
+==============================================
+
+Request Processing Flow
+1. TCP Listener accepts connection on configured port (default 8080)
+2. Extract client IP from connection RemoteAddr
+3. Rate Limiter evaluates token bucket for client IP
+   - If tokens ≥ 1: deduct 1 token, proceed
+   - Else: close connection immediately (silent rejection)
+4. Post Job{connection, router} to buffered job queue (capacity 200)
+5. Worker from pool (10 workers, configurable) dequeues job
+6. Connection Handler sets 5-second read deadline
+7. Parse HTTP/1.1 request via bufio reader
+8. WAF scans all fields (URI, headers, body, trailers)
+   - Match found → return SecurityError → 403 Forbidden + security log
+9. Parse error → return 400 Bad Request + parse rejection log
+10. Router extracts path and looks up registered handler
+    - Not found → 404 Not Found
+    - Found → execute handler function
+11. Response Writer buffers status + headers, writes body, flushes to socket
+12. Connection closes (defer); resources cleaned up; worker ready for next job
+
+Queuing & Backpressure
+● Buffered Job Queue: 200-capacity channel between listener and worker pool
+● Listener Blocking: When queue full, listener blocks on send; natural rate control
+● Worker Blocking: When queue empty, worker blocks on receive; efficient CPU usage
+● No Unbounded Growth: Fixed worker count + bounded queue prevent resource exhaustion
+
+Key Performance Paths
+● Parse → WAF Scan: ~1-5 ms per request (depends on body size, pattern count)
+● Queue Latency: <1 ms typical (instant if slot available)
+● Worker Dispatch: <1 ms (goroutine context switch)
+● Total Request Path: Parse + Route + Handler execution + Response write
+
+
+==============================================
+7. SECURITY SCANNING PIPELINE
+==============================================
+
+WAF Scanning Scope
+Field              | Scanned | When                    | Impact
+URI                | Yes     | During request line parse  | Prevents SQLi/XSS/traversal
+Header names       | Yes     | During header parse     | Detects header injection
+Header values      | Yes     | During header parse     | Scans cookie, auth, etc.
+Body bytes         | Yes     | During body/chunk parse | HTTP layer injection detection
+Trailer names      | Yes     | During trailer parse    | Edge case scanning
+Trailer values     | Yes     | During trailer parse    | Completes coverage
+
+Scanning Pattern
+Request arrives → Parse request line
+             ↓
+Parse headers (scan each name/value)
+             ↓
+Parse body (scan decoded bytes)
+             ↓
+Parse trailers (scan trailer name/value pairs)
+             ↓
+Any match → SecurityError → 403 Forbidden + security log
+No match → Continue to routing
+
+
+==============================================
+8. CONFIGURATION & OPERATIONAL PARAMETERS
+==============================================
+
+Environment Variables & Defaults
+Setting                        | Default           | Impact                          | Tuning Guidance
+ServerAddress                  | :8080            | Listen address:port             | Use :9000 for non-root testing
+WorkerPoolSize                 | 10               | Concurrent request handlers     | Increase for higher load (1x-2x cores)
+JobQueueSize                   | 200              | Buffered queue capacity         | Increase if queue saturation observed
+RateLimitRate                  | 5.0 tokens/sec   | Per-IP refill rate             | Increase for lenient limits; decrease for strict
+RateLimitCapacity              | 10.0 tokens      | Per-IP burst capacity          | Increase for bursty workloads
+MTWS_RATE_LIMIT_DISABLED       | false            | Disable rate limiter globally  | Set true for benchmark mode only
+MTWS_BENCHMARK_MODE            | false            | Disables rate limit + tuning   | Set true for stress testing
+WAF_POLICY_FILE                | default-policy.txt | WAF signatures path           | Point to custom policy for testing
+
+Startup Configuration Example
+export MTWS_LISTEN_ADDR=0.0.0.0:8080
+export MTWS_WORKER_POOL_SIZE=20
+export MTWS_BENCHMARK_MODE=true
+go run ./cmd/server
+
+
+==============================================
+9. ERROR HANDLING & RESPONSE CODES
+==============================================
+
+Error Scenario                  | HTTP Response           | Logged | Recovery
+Connection accept error         | N/A                     | Yes    | Continue accepting
+Rate limit exceeded             | Connection closed       | No*    | Wait for token refill
+Malformed request              | 400 Bad Request         | Yes    | Close, next request
+WAF rule matched               | 403 Forbidden           | Yes    | Close, investigate
+Path not found                 | 404 Not Found           | Yes    | Try different path
+Handler exception              | 500 Internal Server Error| Yes    | Retry request
+Read deadline exceeded          | Connection closes       | Yes    | Client reconnect
+*Rate limit: can be logged with verbose mode (future)
+
+
+==============================================
+10. ACCEPTANCE CRITERIA & IMPLEMENTATION STATUS
+==============================================
+
+Requirement                           | Status | Evidence
+Accept TCP connections                | ✓      | cmd/server/main.go
+Parse HTTP/1.1 requests               | ✓      | http/parser.go + tests
+Generate HTTP responses               | ✓      | core/response.go
+Route requests to handlers            | ✓      | core/router.go
+Worker pool concurrency               | ✓      | pool/pool.go
+Buffered job queue                    | ✓      | pool/pool.go + cmd/server/main.go
+Per-IP rate limiting                  | ✓      | security/ratelimiter/limiter.go
+WAF pattern matching                  | ✓      | security/waf/automaton.go
+Malformed request rejection           | ✓      | http/parser.go
+Connection timeout (5 sec)            | ✓      | core/connection.go
+Environment configuration             | ✓      | config/config.go
+WAF policy loading                    | ✓      | security/waf/policy.go
+Startup logging                       | ✓      | cmd/server/main.go
+Request/security/parse logging        | ✓      | core/connection.go
+Unit tests                            | ✓      | *_test.go files (parser, WAF, rate limiter, config, router)
+Fuzz tests                            | ✓      | http/parser_fuzz_test.go
+Benchmarking tool (lab)               | ✓      | cmd/lab/main.go
+Benchmark payloads                    | ✓      | experiments/payloads/ (17+ files)
+Docker support                        | ✓      | Dockerfile
+Docker Compose stack                  | ✓      | docker-compose.yml, .benchmark.yml
+Health check endpoint                 | ✓      | cmd/server/main.go
+Error handling (400/403/404/500)      | ✓      | core/response.go
+
+
+==============================================
+11. LIMITATIONS & FUTURE ENHANCEMENTS
+==============================================
+
+Out of Scope (v1.0):
+● TLS/HTTPS encryption
+● Keep-alive connections (HTTP/1.1 pipelining)
+● Wildcard or regex route matching
+● Structured JSON logging
+● Prometheus metrics export
+● Graceful shutdown (SIGTERM handling)
+● Hot-reload of WAF policies without restart
+● HTTP/2 protocol support
+● Large file streaming (chunked upload optimization)
+● Authentication/authorization
+● Request/response compression (gzip)
+● Virtual hosts / multi-domain support
+
+Planned Enhancements (v2.0+):
+● TLS/HTTPS with certificate management
+● Connection keep-alive and pipelining
+● Advanced routing (regex, wildcards, parameters)
+● Metrics export (Prometheus, JSON API)
+● Structured logging (JSON format)
+● Hot-reload capabilities
+● Performance optimizations (memory pool, zero-copy parsing)
+● Extended protocol support (CONNECT, WebSocket)
+
+
+==============================================
+12. DEPLOYMENT & OPERATIONAL CHECKLIST
+==============================================
+
+Pre-Deployment Verification
+□ Go 1.26.1+ installed (go version)
+□ Source code available and verified
+□ All tests pass (go test ./...)
+□ Code formatting correct (go fmt ./...)
+□ Binary compiles (go build -o mtws ./cmd/server)
+□ Environment variables configured (.env file or shell export)
+□ WAF policy file exists and readable (security/waf/default-policy.txt)
+□ Target port available and not in use (netstat -tuln | grep 8080)
+□ Network connectivity verified (ping localhost, gateway, etc.)
+□ Logs directory writable (if logging to file)
+□ Health endpoint responds (curl http://localhost:8080/health)
+
+Running the Server
+go build -o mtws ./cmd/server              # Build binary
+./mtws                                     # Run with defaults
+MTWS_WORKER_POOL_SIZE=20 ./mtws           # Custom configuration
+docker compose up --build                 # Docker deployment
+go test ./...                              # Verify before deployment
+
+Monitoring & Troubleshooting
+● Check logs: Server logs to stdout; redirect as needed
+● Monitor rate limiter: Observe security event logs
+● Benchmark performance: go run ./cmd/lab benchmark -url http://localhost:8080/health
+● Compare implementations: go run ./cmd/lab compare -json-out results.json
+
+
+==============================================
+END OF REQUIREMENTS DOCUMENT
+==============================================

