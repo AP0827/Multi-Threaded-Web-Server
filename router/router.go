@@ -2,8 +2,6 @@ package router
 
 import (
 	"os"
-	"fmt"
-	"net"
 )
 
 type Page struct {
@@ -11,11 +9,11 @@ type Page struct {
 	Body  []byte
 }
 
-func loadPage(title string) *Page, err {
+func loadPage(title string) (*Page, error) {
 	filename := title + ".txt"
-	body, _ := os.ReadFile(filename)
-	if err!=null{
+	body, err := os.ReadFile(filename)
+	if err != nil {
 		return nil, err
 	}
-	return &Page{Title: title, Body: body}
+	return &Page{Title: title, Body: body}, nil
 }

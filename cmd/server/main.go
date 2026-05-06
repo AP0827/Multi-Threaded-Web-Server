@@ -30,6 +30,7 @@ func main() {
 	if err := run(ctx, cfg); err != nil {
 		log.Fatal(err)
 	}
+
 }
 
 func run(ctx context.Context, cfg config.Config) error {
@@ -85,49 +86,50 @@ func serve(ctx context.Context, l net.Listener, jobs chan<- pool.Job, router *co
 		}
 		metrics.IncAcceptedConnection()
 
-		handleConnection(conn, jobs)
+		handleConnection(ctx, conn, jobs, router, limiter, cfg, metrics)
 	}
 }
 
-		if !cfg.RateLimitEnabled || limiter.Allow(clientIP) {
-			job := pool.Job{
-				Conn:   conn,
-				Router: router,
-				Options: core.ConnectionOptions{
-					ReadTimeout:              cfg.ReadTimeout,
-					WriteTimeout:             cfg.WriteTimeout,
-					IdleTimeout:              cfg.IdleTimeout,
-					MaxRequestsPerConnection: cfg.MaxKeepAlive,
-					Metrics:                  metrics,
-				},
-			}
-			if enqueueJob(ctx, jobs, job, cfg.QueueTimeout) {
-				continue
-			}
+func handleConnection(ctx context.Context, conn net.Conn, jobs chan<- pool.Job, router *core.Router, limiter *ratelimiter.Limiter, cfg config.Config, metrics *core.Metrics) {
+	clientIP := remoteIP(conn)
 
-			metrics.IncQueueReject()
-			log.Printf("Status 503: worker queue saturated for %s", clientIP)
-			if err := core.NewResponseWriterWithOptions(conn, "HTTP/1.1", core.ResponseOptions{
-				WriteTimeout: cfg.WriteTimeout,
-				Metrics:      metrics,
-			}).WriteText(core.StatusServiceUnavailable, ""); err != nil {
-				log.Println("Write error:", err)
-			}
-			conn.Close()
-			continue
+	if !cfg.RateLimitEnabled || limiter.Allow(clientIP) {
+		job := pool.Job{
+			Conn:   conn,
+			Router: router,
+			Options: core.ConnectionOptions{
+				ReadTimeout:              cfg.ReadTimeout,
+				WriteTimeout:             cfg.WriteTimeout,
+				IdleTimeout:              cfg.IdleTimeout,
+				MaxRequestsPerConnection: cfg.MaxKeepAlive,
+				Metrics:                  metrics,
+			},
 		}
-		return
-	}
+		if enqueueJob(ctx, jobs, job, cfg.QueueTimeout) {
+			return
+		}
 
-		metrics.IncRateLimited()
-		log.Printf("Status 429: request blocked by token bucket policy for %s", clientIP)
+		metrics.IncQueueReject()
+		log.Printf("Status 503: worker queue saturated for %s", clientIP)
 		if err := core.NewResponseWriterWithOptions(conn, "HTTP/1.1", core.ResponseOptions{
 			WriteTimeout: cfg.WriteTimeout,
 			Metrics:      metrics,
-		}).WriteText(core.StatusTooManyRequests, ""); err != nil {
+		}).WriteText(core.StatusServiceUnavailable, ""); err != nil {
 			log.Println("Write error:", err)
 		}
+		conn.Close()
+		return
 	}
+
+	metrics.IncRateLimited()
+	log.Printf("Status 429: request blocked by token bucket policy for %s", clientIP)
+	if err := core.NewResponseWriterWithOptions(conn, "HTTP/1.1", core.ResponseOptions{
+		WriteTimeout: cfg.WriteTimeout,
+		Metrics:      metrics,
+	}).WriteText(core.StatusTooManyRequests, ""); err != nil {
+		log.Println("Write error:", err)
+	}
+	conn.Close()
 }
 
 func remoteIP(conn net.Conn) string {
