@@ -40,7 +40,6 @@ func HandleConnectionWithOptions(conn net.Conn, router *Router, options Connecti
 		options.MaxRequestsPerConnection = 100
 	}
 
-	started := time.Now()
 	options.Metrics.IncActiveConnection()
 	defer options.Metrics.DecActiveConnection()
 
@@ -86,6 +85,7 @@ func HandleConnectionWithOptions(conn net.Conn, router *Router, options Connecti
 			return
 		}
 		options.Metrics.IncRequest()
+		requestStarted := time.Now()
 
 		if router == nil {
 			log.Println("Router is not configured")
@@ -108,11 +108,12 @@ func HandleConnectionWithOptions(conn net.Conn, router *Router, options Connecti
 			KeepAliveMaxRequests: remainingRequests,
 		})
 		router.ServeHTTP(writer, req)
+		options.Metrics.RecordRequestDuration(time.Since(requestStarted))
 		if !writer.Wrote() {
 			_ = writer.WriteText(StatusInternalServerError, StatusInternalServerError.Body)
 			keepAlive = false
 		}
-		logAccessEvent(conn, req, writer.StatusCode(), writer.BytesWritten(), time.Since(started))
+		logAccessEvent(conn, req, writer.StatusCode(), writer.BytesWritten(), time.Since(requestStarted))
 		if !keepAlive {
 			return
 		}

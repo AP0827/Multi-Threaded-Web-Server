@@ -3,17 +3,15 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>MTWS Static Demo</title>
+  <meta name="color-scheme" content="light">
+  <meta name="theme-color" content="#f8fafc">
+  <title>MTWS Monitor</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
   <link rel="stylesheet" href="/static/styles.css">
 </head>
 <body>
-  <main>
-    <p class="eyebrow">MTWS Static File Serving</p>
-    <h1>Secure files, bounded paths.</h1>
-    <p>
-      This page is served from the fixed public directory through MTWS'
-      path-confined static route.
-    </p>
-  </main>
+  <div id="root"></div>
+  <script type="module" src="/static/app.js"></script>
 </body>
 </html>

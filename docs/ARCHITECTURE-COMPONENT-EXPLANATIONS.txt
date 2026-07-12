@@ -1,0 +1,764 @@
+MTWS ARCHITECTURE DIAGRAM - DETAILED COMPONENT EXPLANATIONS
+For PowerPoint Presentation
+
+==============================================
+OVERVIEW
+==============================================
+
+The Multi-Threaded Web Server (MTWS) follows a layered security-first architecture where 
+HTTP requests are progressively validated and processed through multiple defense layers:
+1. Connection rate limiting (DoS protection)
+2. Request buffering and thread pool distribution
+3. HTTP parsing and protocol compliance
+4. Security scanning via WAF
+5. Request routing and resource handling
+
+Each component operates on a specific layer with clear input/output contracts and error handling.
+
+
+==============================================
+COMPONENT 1: USER + LOAD TESTING SCRIPTS
+==============================================
+
+LOCATION: Left side, entry point
+ROLE: Request origin
+
+Description:
+- External clients (users, load testing tools, automated scripts)
+- Generate HTTP requests targeting the server
+- Send requests over TCP/IP to server address:port (default localhost:8080)
+
+Responsibilities:
+- Formulate valid or attack-based HTTP requests
+- Establish TCP connections
+- Send request data in HTTP/1.1 format
+- Receive and process responses
+
+Interaction with Next Layer:
+- Sends raw TCP packets to Rate Limiter
+- Waits for connection acceptance/rejection
+- If accepted, sends HTTP request body; if rejected, connection closes immediately
+
+Load Testing Scenarios:
+- Benign: Normal GET/POST requests to /health, /echo
+- Attack: SQLi, XSS, path traversal payloads
+- Edge cases: Malformed headers, chunked encoding, HTTP ambiguities
+
+Example: go run ./cmd/lab benchmark -url http://localhost:8080/health -requests 1000 -concurrency 50
+
+
+==============================================
+COMPONENT 2: RATE LIMITER (Token Bucket)
+==============================================
+
+LOCATION: First defense layer after TCP accept
+ROLE: DoS prevention, per-IP traffic shaping
+
+Architecture:
+- Per-client (per-IP) token bucket
+- One bucket per unique client IP address
+- Mutex-protected map of buckets
+
+Algorithm (Token Bucket):
+1. Each bucket has:
+   - tokens: current available capacity (float64)
+   - lastRefill: timestamp of last token refill
+   - rate: tokens/second (default 5.0)
+   - capacity: max burst tokens (default 10.0)
+
+2. Decision Logic on New Request:
+   a) Calculate elapsed time since last refill
+   b) Add (elapsed_time × rate) tokens to bucket, capped at capacity
+   c) If tokens ≥ 1:
+      - Deduct 1 token
+      - ALLOW request to proceed to queue
+   d) Else:
+      - DENY request
+      - Close connection immediately (no logging)
+
+3. Example (default config: rate=5.0, capacity=10.0):
+   - Time 0.0s, Request 1: 10 tokens → 10 - 1 = 9 (allow)
+   - Time 0.2s, Request 2: 9 + (5.0×0.2) - 1 = 8.0 (allow)
+   - Time 0.4s, Request 3: 8.0 + (5.0×0.2) - 1 = 7.0 (allow)
+   - Time 0.5s, Request 4: 7.0 + (5.0×0.1) - 1 = 6.5 (allow)
+   - Requests at rate 5/sec: sustained; bursts up to 10 requests tolerated
+
+Behavior:
+- Attacker sends 1000 req/sec from single IP
+  → First 10 allowed (burst capacity)
+  → Next requests denied and connections closed
+  → Limiter prevents resource exhaustion
+
+Configuration:
+- MTWS_RATE_LIMIT_RATE: tokens/sec per IP (default 5.0)
+- MTWS_RATE_LIMIT_CAPACITY: max burst (default 10.0)
+- MTWS_RATE_LIMIT_DISABLED: bypass entirely (for testing)
+- MTWS_BENCHMARK_MODE: disable + other tuning (for stress tests)
+
+Thread Safety:
+- Uses sync.Mutex to protect bucket map
+- Lock held only during token calculation (~1-2 microseconds)
+- Minimal contention even with 1000+ concurrent IPs
+
+Connection Handling:
+- ALLOW → post Job to queue → continue to next layer
+- DENY → close connection immediately (no error response, silent rejection)
+
+Security Benefit:
+- Prevents single client from overwhelming server
+- No memory allocated for denied connections
+- Protects downstream components from flood attacks
+
+
+==============================================
+COMPONENT 3: REQUEST QUEUE (Buffered Channel)
+==============================================
+
+LOCATION: Bridge between listener and worker pool
+ROLE: Connection buffering, backpressure management
+
+Structure:
+- Go buffered channel: chan Job
+- Capacity: 200 (configurable via MTWS_JOB_QUEUE_SIZE)
+- Type: pool.Job{Conn net.Conn, Router *Router}
+
+Responsibilities:
+- Accept connections from listener goroutine
+- Store temporarily if workers busy
+- Deliver to workers when available
+- Implement natural backpressure
+
+Flow:
+1. Listener goroutine accepts TCP connection
+2. Rate limiter allows → creates Job{conn, router}
+3. Listener sends Job to queue
+   - If queue has space: immediate send, listener continues
+   - If queue full (200 jobs): listener blocks until space available
+4. Worker goroutine reads Job from queue
+   - If jobs available: immediate receive, process
+   - If queue empty: worker blocks until job arrives
+
+Backpressure Example (Listener accepts at 1000 req/sec, workers process at 500 req/sec):
+- t=0.0s: 0 jobs queued, listener unblocked
+- t=0.2s: 100 jobs queued, listener unblocked
+- t=0.35s: 175 jobs queued, listener unblocked
+- t=0.36s: 200 jobs queued (FULL) → listener blocks on next send
+- t=0.5s: 150 jobs queued (workers draining) → listener unblocks, can send again
+- Result: Listener throttled to worker pace; no unbounded growth
+
+Advantages:
+- Decouples accept rate from processing rate
+- No memory leak from dropped goroutines
+- Simple Go channel mechanism (language primitive)
+- Efficient wait-free when capacity available
+
+Key Metric:
+- Queue depth indicates system load
+- If consistently full: increase MTWS_WORKER_POOL_SIZE
+- If consistently empty: workers idle, system under-utilized
+
+
+==============================================
+COMPONENT 4: WORKER THREAD POOL
+==============================================
+
+LOCATION: Processing layer, center of diagram
+ROLE: Concurrent request handling with bounded parallelism
+
+Architecture:
+- Fixed number of goroutines (workers), configurable
+- Default: 10 workers
+- Configurable via MTWS_WORKER_POOL_SIZE environment variable
+- Created at startup via StartWorkerPool(numWorkers, jobs chan)
+
+Worker Lifecycle:
+1. Startup:
+   - Main goroutine calls StartWorkerPool(10, jobQueue)
+   - Spawns 10 goroutines via go worker(i, jobQueue)
+   - Each worker enters infinite loop: for job := range jobQueue
+
+2. Processing Loop:
+   while true {
+       job := ← jobQueue    // blocks if queue empty
+       conn := job.Conn
+       router := job.Router
+       handleConnection(conn, router)  // process request
+       // loop back to wait for next job
+   }
+
+3. Shutdown: Server restart (no graceful shutdown in v1.0)
+
+Concurrency Model:
+- Max N simultaneous requests (N = pool size)
+- If 10 workers and 100 requests queued: 10 process, 90 wait in queue
+- CPU scheduling: Go runtime multiplexes goroutines across CPU cores
+
+Thread Safety:
+- Each worker handles one connection at a time (no request shared state)
+- Workers read-only access to Router (concurrent safe, no mutations)
+- Connection handler: private bufio Reader/Writer per connection
+- Rate limiter: Mutex protects global token bucket map
+
+Scalability:
+- 1-4 workers: Good for development, CPU not fully utilized
+- 10-20 workers: Typical for lab deployment (matches typical core count)
+- 50-100 workers: Only for high-concurrency stress tests
+- Beyond 100 workers: Diminishing returns, context switching overhead
+
+Tuning:
+- Increase if: Queue frequently full, CPU idle, latency high
+- Decrease if: CPU maxed, context switch overhead visible
+- Baseline: Set to 1-2x number of CPU cores
+
+
+==============================================
+COMPONENT 5: HTTP REQUEST PARSER
+==============================================
+
+LOCATION: After worker pool assignment, before WAF
+ROLE: Parse raw TCP bytes into structured HTTP request
+
+Input:
+- bufio.Reader from TCP connection
+- Raw HTTP/1.1 request bytes (headers + body)
+
+Parsing Steps:
+
+1. Read Request Line:
+   GET /health HTTP/1.1\r\n
+   - Extract METHOD (GET, POST, PUT, DELETE, etc.)
+   - Extract Request-Target (path, e.g., /health)
+   - Extract HTTP-Version (must be HTTP/1.1; HTTP/1.0 rejected)
+   - Size limit: 4096 bytes max request line
+
+2. Read Headers:
+   Host: localhost:8080\r\n
+   Content-Type: application/json\r\n
+   \r\n
+   - Read lines until blank line (CRLF CRLF)
+   - For each header: parse "Name: Value"
+   - Canonicalize header names (lowercase internally)
+   - Check for duplicate headers (ERROR if found)
+   - Size limits: 8192 bytes per header line, max 64 headers
+
+3. Determine Body Framing:
+   a) Content-Length: N
+      - Read exactly N bytes from connection
+      - Reject if also has Transfer-Encoding (ambiguity)
+   
+   b) Transfer-Encoding: chunked
+      - Read chunk size (hex) + CRLF
+      - Read chunk data
+      - Read CRLF
+      - Repeat until chunk size = 0
+      - Parse optional trailers after final chunk
+   
+   c) Neither (GET request, no body)
+      - No body, request complete
+
+4. Parse Trailers (if chunked):
+   - Similar to headers, optional
+   - Forbidden fields: Content-Length, Host, Transfer-Encoding, Trailer
+   - Size limits: max 16 trailers, 8192 bytes per line
+
+Output:
+- Request struct:
+  {
+    Method: "GET"
+    Path: "/health"
+    Version: "HTTP/1.1"
+    Headers: map[string]string
+    Body: []byte
+    ...
+  }
+
+Error Handling (Fail-Closed):
+- Malformed request line → 400 Bad Request
+- Invalid method → 400 Bad Request
+- Invalid HTTP version (not 1.1) → 400 Bad Request
+- Duplicate headers → 400 Bad Request
+- Both Content-Length and Transfer-Encoding → 400 Bad Request
+- Invalid chunk size → 400 Bad Request
+- Missing Host header → 400 Bad Request
+- Request line > 4096 bytes → 400 Bad Request
+- Header > 8192 bytes → 400 Bad Request
+
+Design Philosophy:
+- Strict compliance: reject ambiguous inputs
+- Prevents parser discrepancies with downstream WAF
+- "Fail-closed": when in doubt, reject (security principle)
+- Not designed to be lenient like production browsers
+
+
+==============================================
+COMPONENT 6: WEB APPLICATION FIREWALL (WAF)
+==============================================
+
+LOCATION: After HTTP parser, before router
+ROLE: Signature-based threat detection and blocking
+
+Architecture: Aho-Corasick Automaton
+- Multi-pattern matching algorithm (vs. simple regex)
+- Efficient: O(n + m + z) where n=text, m=patterns, z=matches
+- Built at startup from policy file
+
+Components of WAF:
+
+1. Policy Loader:
+   - Reads security/waf/default-policy.txt
+   - One pattern per line (plain text)
+   - Example patterns:
+     <script>
+     union select
+     ../../../
+     eval(
+     onclick=
+     base64_decode
+   - Configurable via MTWS_WAF_POLICY_FILE env var
+   - Loaded at startup before accepting connections
+
+2. Normalization Layer:
+   - URL decode: %3C%73%63%72%69%70%74%3E → <script>
+   - HTML entity decode: &#60;&#115;&#99;&#114;&#105;&#112;&#116;&#62; → <script>
+   - Double encoding detection: %25 (encoded %)
+   - Case normalization: ScRiPt → script
+   - Purpose: Defeat obfuscation, evasion techniques
+
+3. Automaton (Aho-Corasick):
+   - Trie-based state machine
+   - Each node represents character position
+   - Failure links for efficient pattern matching
+   - Scan at speed of text processing (no backtracking)
+   - Example: scanning for ["<script>", "union select"]
+     
+     Input text: "SELECT * UNION SELECT * FROM users"
+     
+     Scan: S-E-L-E-C-T- -* -U-N-I-O-N- -S-E-L-E-C-T
+                              ↓ start match
+                              [u-n-i-o-n- -s-e-l-e-c-t]
+                              ↓ MATCH FOUND: "union select"
+
+4. Scanner:
+   - Applies normalization to each scanned field
+   - Feeds normalized text to automaton
+   - Checks for pattern matches
+   - Records matched rule ID and field
+
+5. Match Result:
+   - If no match: safe (green path in diagram)
+     → Continue to router
+   - If match found: unsafe (red path)
+     → Return SecurityError{Field, Pattern, RuleID}
+     → 403 Forbidden response
+     → Log security event + client IP + pattern + rule ID
+
+6. Default Rule Set:
+   - Pre-loaded patterns for common attacks
+   - SQLi: union, select, insert, delete, drop, exec, script
+   - XSS: <script>, onerror, onclick, javascript:
+   - Path Traversal: ../, ..\, etc.
+   - Command Injection: |, &, ;, backtick, eval, system
+   - Extensible: add patterns to policy file
+
+Scanned Fields:
+- URI: Full request path (/health?id=1&name=test)
+- Header names: Content-Type, X-Custom-Header
+- Header values: Bearer token123, user-agent string
+- Body: POST/PUT request body (JSON, form data, binary)
+- Trailers: Optional HTTP/1.1 trailers
+
+Example Attack Scenario:
+1. Attacker sends:
+   GET /api/users?id=1 UNION SELECT password FROM admin HTTP/1.1
+   Host: example.com
+
+2. Parser extracts: Path = "/api/users?id=1 UNION SELECT password FROM admin"
+
+3. WAF normalizes: path_normalized = "/api/users?id=1 union select password from admin"
+
+4. Automaton scans: finds "union select" pattern
+
+5. SecurityError triggered: pattern="union select", field="URI", ruleID="005"
+
+6. Response: 403 Forbidden
+
+7. Log: [SECURITY] Client 192.168.1.100 - Rule 005 matched in field=URI pattern='union select' rule_id='005' status_code=403
+
+Limitations (v1.0):
+- Signature-based (not anomaly detection)
+- False positives if patterns in legitimate requests
+- Cannot detect zero-day exploits
+- Evasion possible with sophisticated encoding
+
+Future Enhancements:
+- Hot-reload policies without restart
+- Machine learning-based detection
+- Request context awareness (e.g., distinguish SELECT in comment vs. query)
+
+
+==============================================
+COMPONENT 7: ROUTER
+==============================================
+
+LOCATION: After WAF, before response builder
+ROLE: Request routing to appropriate handlers
+
+Structure:
+- Router struct: map[string]HandlerFunc
+- Exact-match routing (no wildcards, no regex in v1.0)
+- Stateless: read-only access by all worker threads
+
+Route Registration (at startup):
+func buildRouter() *Router {
+    router := NewRouter()
+    router.Handle("/health", healthHandler)
+    router.Handle("/echo", echoHandler)
+    router.Handle("/api/users", userHandler)
+    return router
+}
+
+Routing Logic:
+1. Extract path from request:
+   GET /health?id=1 HTTP/1.1
+   → path = "/health" (query string separated)
+
+2. Lookup in routes map:
+   routes["/health"] → healthHandler function found
+   routes["/api/unknown"] → not found
+
+3. Dispatch:
+   - If found: Call handler(responseWriter, request)
+   - If not found: Return 404 Not Found response
+
+Handler Contract:
+type HandlerFunc func(*ResponseWriter, *Request)
+
+Example Handler - Health Check:
+func healthHandler(w *ResponseWriter, req *Request) {
+    w.WriteHeader(200)  // Status OK
+    w.Write([]byte("healthy"))
+}
+
+Example Handler - Echo (returns request info):
+func echoHandler(w *ResponseWriter, req *Request) {
+    response := fmt.Sprintf(
+        "Method: %s, Path: %s, Host: %s",
+        req.Method(), req.Path(), req.Host(),
+    )
+    w.WriteHeader(200)
+    w.Write([]byte(response))
+}
+
+Thread Safety:
+- Route map is built once at startup
+- Never modified during request processing
+- All workers safely read-only access
+- No locks needed for routing
+
+Scalability Note:
+- O(1) lookup time (Go map hash table)
+- No latency penalty from route count
+- Suitable for 100s of routes
+
+404 Handling:
+func (r *Router) ServeHTTP(w *ResponseWriter, req *Request) {
+    path := extract_path(req)
+    handler, ok := r.routes[path]
+    if !ok {
+        writeErrorResponse(w, "404 Not Found")
+        return
+    }
+    handler(w, req)
+}
+
+Future Enhancements:
+- Wildcard routes: /api/users/* → userListHandler
+- Route parameters: /api/users/{id} → userDetailHandler
+- Path prefix matching: /api/* → apiGateway
+- Regex patterns: /api/v[0-9]+ → versionRouter
+
+
+==============================================
+COMPONENT 8: HTTP RESPONSE BUILDER
+==============================================
+
+LOCATION: After handler execution, before sending to client
+ROLE: Serialize structured response into HTTP/1.1 bytes
+
+Input from Handler:
+- Status code (200, 400, 403, 404, 500)
+- Headers (Content-Type, Content-Length, Date, etc.)
+- Body (response payload)
+
+Response Building Process:
+
+1. Write Status Line:
+   HTTP/1.1 200 OK\r\n
+
+2. Write Headers:
+   Content-Type: text/plain\r\n
+   Content-Length: 5\r\n
+   \r\n
+
+3. Write Body:
+   hello
+
+Final Serialized Response:
+HTTP/1.1 200 OK\r\n
+Content-Type: text/plain\r\n
+Content-Length: 5\r\n
+\r\n
+hello
+
+Automatic Header Computation:
+- Content-Length: Calculated from body length (no manual setting needed)
+- Date: Current timestamp (optional, added by handler if needed)
+- Server: Could include MTWS version (not in v1.0)
+
+Status Codes Used:
+
+200 OK
+- Handler completed successfully
+- Body contains resource data
+
+400 Bad Request
+- Malformed HTTP request
+- Invalid headers, syntax errors
+- Sent by HTTP parser, not handler
+
+403 Forbidden
+- WAF rule matched
+- Malicious pattern detected
+- Sent by WAF scanner, not handler
+
+404 Not Found
+- Requested path not in routes
+- Sent by router, not handler
+
+500 Internal Server Error
+- Unhandled exception in handler
+- Sent by error recovery mechanism
+
+Body Framing:
+- Content-Length: Only method in v1.0
+  - Body length known in advance
+  - Example: 5-byte body → Content-Length: 5
+
+- Transfer-Encoding: chunked (supported in v1.0, rare for responses)
+  - Future: streaming responses
+
+Connection Handling:
+- Connection: close (v1.0)
+  - Close socket after response sent
+  - Future: Connection: keep-alive for pipelining
+
+Example Response Building (handler code):
+func userHandler(w *ResponseWriter, req *Request) {
+    if req.Method() != "GET" {
+        w.WriteHeader(405)  // Method Not Allowed
+        w.Write([]byte("Use GET"))
+        return
+    }
+    
+    userData := `{"id": 1, "name": "Alice"}`
+    w.WriteHeader(200)
+    w.Write([]byte(userData))
+    // ResponseBuilder automatically:
+    // - Sets Content-Length to len(userData)
+    // - Adds HTTP/1.1 200 OK status line
+    // - Writes all to socket
+}
+
+Thread Safety:
+- Each connection has private ResponseWriter
+- No shared state between responses
+- Buffered writes, then single flush to socket
+
+
+==============================================
+COMPONENT 9: CONNECTION CLOSED / SAFE REQUEST PATHS
+==============================================
+
+LOCATION: Exit points from diagram
+ROLE: Outcome indicators
+
+Path 1: UNSAFE (Red) → Connection Closed
+Triggered by:
+1. Rate limiter denial (tokens exhausted)
+   - Silent close, no response
+2. WAF rule match (malicious pattern detected)
+   - 403 Forbidden response sent first, then close
+3. HTTP parser error (malformed request)
+   - 400 Bad Request response sent first, then close
+4. Read timeout (5 seconds without complete request)
+   - Connection closed silently
+
+Behavior:
+- TLS handshake complete, TCP connection open
+- Request header/body read
+- Security check fails
+- HTTP error response sent (if not timeout)
+- Socket closed
+- Connection resources freed
+
+Example Unsafe Scenario:
+Client sends: GET /api/admin UNION SELECT * FROM passwords HTTP/1.1
+→ Parser reads request successfully
+→ WAF detects "UNION SELECT" pattern
+→ 403 Forbidden sent to client
+→ Connection closed
+→ Client receives: HTTP/1.1 403 Forbidden, then connection reset
+
+Path 2: SAFE REQUEST (Green) → HTTP Response
+Triggered by:
+1. Request passes rate limiter (tokens available)
+2. HTTP parser validates syntax (no errors)
+3. WAF scans all fields (no patterns matched)
+4. Router finds handler or returns 404
+5. Handler executes and builds response
+6. Response sent to client
+7. Connection closed
+
+Behavior:
+- All validation layers passed
+- Request safely routed to handler
+- Handler generates appropriate response
+- Response sent with proper status code + headers + body
+- Client receives complete response
+- Connection closed
+
+Example Safe Scenario:
+Client sends: GET /health HTTP/1.1\r\nHost: localhost\r\n\r\n
+→ Rate limiter: tokens available, allow
+→ Parser: valid HTTP/1.1 syntax
+→ WAF: no patterns in "/health"
+→ Router: found handler for "/health"
+→ healthHandler executes: return 200 OK + "healthy"
+→ Response sent: HTTP/1.1 200 OK\r\nContent-Length: 7\r\n\r\nhealthy
+→ Client receives response successfully
+
+Logging:
+- Unsafe paths trigger security event or parse rejection logs
+- Safe paths trigger request log (method, path, version, status)
+- Client IP included in all logs for audit trail
+
+
+==============================================
+DATA FLOW SUMMARY
+==============================================
+
+Complete Request Lifecycle:
+
+1. User sends TCP SYN to localhost:8080
+   ↓ [Network layer - OS handles]
+   
+2. Server accepts connection (listener goroutine)
+   ↓
+   
+3. Rate Limiter checks client IP token bucket
+   ├─ DENY → close connection (silent)
+   └─ ALLOW → continue
+   ↓
+   
+4. Create Job{conn, router}, send to queue
+   ├─ Queue full → listener blocks
+   └─ Queue has space → job enqueued immediately
+   ↓
+   
+5. Available worker dequeues Job, calls HandleConnection
+   ↓
+   
+6. HTTP Parser reads from bufio.Reader
+   ├─ Error → 400 Bad Request, log parse rejection, close
+   └─ Success → Request struct created
+   ↓
+   
+7. WAF scans all fields (URI, headers, body, trailers)
+   ├─ Match found → 403 Forbidden, log security event, close
+   └─ No match → safe request
+   ↓
+   
+8. Router extracts path, looks up handler
+   ├─ Not found → 404 Not Found, close
+   └─ Found → execute handler
+   ↓
+   
+9. Handler builds response (status, headers, body)
+   ↓
+   
+10. ResponseBuilder sends HTTP response to socket
+   ↓
+   
+11. Connection closed, worker returns to job queue, awaits next job
+   ↓
+   
+12. Client receives response / error
+
+
+==============================================
+PRESENTATION SLIDE SUGGESTIONS
+==============================================
+
+Slide 1: Title
+- Multi-Threaded Web Server (MTWS)
+- Architecture Overview
+
+Slide 2: Architecture Diagram
+- Show full diagram as visual reference
+- Explain layered approach
+
+Slide 3-4: User & Load Testing
+- Entry point explanation
+- Types of requests (benign, attack, edge cases)
+
+Slide 5-7: Rate Limiter
+- Token bucket algorithm
+- Per-IP isolation
+- Example calculation
+- Security benefit
+
+Slide 8-9: Request Queue & Worker Pool
+- Buffering and backpressure
+- Bounded concurrency
+- Worker lifecycle
+
+Slide 10-11: HTTP Parser
+- Parsing steps
+- Size limits
+- Error handling (fail-closed principle)
+
+Slide 12-14: Web Application Firewall
+- Aho-Corasick automaton
+- Scanned fields
+- Example attack detection
+
+Slide 15: Router
+- Route mapping
+- Exact-match lookup
+
+Slide 16: HTTP Response Builder
+- Status codes
+- Header computation
+- Response serialization
+
+Slide 17: Data Flow
+- Complete request lifecycle
+- Decision points
+- Exit paths (safe/unsafe)
+
+Slide 18: Performance Metrics
+- Throughput targets
+- Latency characteristics
+- Scalability limits
+
+Slide 19: Security Properties
+- Defense layers
+- Fail-closed design
+- Logged events
+
+Slide 20: Q&A
+
+
+==============================================
+END OF COMPONENT EXPLANATIONS
+==============================================

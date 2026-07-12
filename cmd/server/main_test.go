@@ -23,6 +23,45 @@ func TestBuildRouterServesSubmit(t *testing.T) {
 	}
 }
 
+func TestBuildRouterServesFrontendShell(t *testing.T) {
+	response := issueRawRequest(t, "GET / HTTP/1.1\r\nHost: localhost\r\n\r\n")
+	if !strings.Contains(response, "HTTP/1.1 200 OK") {
+		t.Fatalf("expected 200 OK response, got %q", response)
+	}
+	if !strings.Contains(response, "MTWS Monitor") {
+		t.Fatalf("expected monitor shell, got %q", response)
+	}
+	if !strings.Contains(response, "id=\"root\"") {
+		t.Fatalf("expected root mount node, got %q", response)
+	}
+}
+
+func TestBuildRouterServesMonitorAPI(t *testing.T) {
+	response := issueRawRequest(t, "GET /api/monitor HTTP/1.1\r\nHost: localhost\r\n\r\n")
+	if !strings.Contains(response, "HTTP/1.1 200 OK") {
+		t.Fatalf("expected 200 OK response, got %q", response)
+	}
+	if !strings.Contains(response, "application/json") {
+		t.Fatalf("expected JSON content type, got %q", response)
+	}
+	if !strings.Contains(response, "\"server\"") || !strings.Contains(response, "\"metrics\"") {
+		t.Fatalf("expected monitor payload, got %q", response)
+	}
+}
+
+func TestBuildRouterServesLogsAPI(t *testing.T) {
+	response := issueRawRequest(t, "GET /api/logs?limit=5 HTTP/1.1\r\nHost: localhost\r\n\r\n")
+	if !strings.Contains(response, "HTTP/1.1 200 OK") {
+		t.Fatalf("expected 200 OK response, got %q", response)
+	}
+	if !strings.Contains(response, "application/json") {
+		t.Fatalf("expected JSON content type, got %q", response)
+	}
+	if !strings.Contains(response, "\"logs\"") {
+		t.Fatalf("expected logs payload, got %q", response)
+	}
+}
+
 func TestBuildRouterServesSearch(t *testing.T) {
 	response := issueRawRequest(t, "GET /search?q=harmless HTTP/1.1\r\nHost: localhost\r\n\r\n")
 	if !strings.Contains(response, "HTTP/1.1 200 OK") {
@@ -68,7 +107,7 @@ func TestBuildRouterServesStaticFile(t *testing.T) {
 	if !strings.Contains(response, "Content-Type: text/html") {
 		t.Fatalf("expected html content type, got %q", response)
 	}
-	if !strings.Contains(response, "MTWS Static File Serving") {
+	if !strings.Contains(response, "MTWS Monitor") {
 		t.Fatalf("expected static demo body, got %q", response)
 	}
 }

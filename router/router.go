@@ -1,15 +1,13 @@
 package router
 
-import (
-	"os"
-)
+import "os"
 
 type Page struct {
 	Title string
 	Body  []byte
 }
 
-func loadPage(title string) (*Page, error) {
+func LoadPage(title string) (*Page, error) {
 	filename := title + ".txt"
 	body, err := os.ReadFile(filename)
 	if err != nil {

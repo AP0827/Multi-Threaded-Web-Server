@@ -8,8 +8,10 @@ import (
 	"MTWS/security/ratelimiter"
 	"context"
 	"crypto/tls"
+	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"log"
 	"mime"
 	"net"
@@ -17,12 +19,15 @@ import (
 	"os"
 	"os/signal"
 	"path/filepath"
+	"runtime"
+	"strconv"
 	"strings"
 	"syscall"
 	"time"
 )
 
 func main() {
+	installLogging()
 	cfg := config.Load()
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
@@ -48,7 +53,8 @@ func run(ctx context.Context, cfg config.Config) error {
 	jobs := make(chan pool.Job, cfg.JobQueueSize)
 	workers := pool.StartWorkerPool(cfg.WorkerPoolSize, jobs)
 	metrics := core.NewMetrics()
-	router := buildRouterWithMetrics(metrics, cfg.StaticDir)
+	startedAt := time.Now()
+	router := buildRouterWithMetrics(metrics, cfg.StaticDir, cfg, jobs, startedAt)
 	limiter := ratelimiter.New(cfg.RateLimitRate, cfg.RateLimitCapacity)
 
 	logStartup(cfg)
@@ -220,20 +226,33 @@ func logStartup(cfg config.Config) {
 }
 
 func buildRouter() *core.Router {
-	return buildRouterWithMetrics(core.NewMetrics(), config.DefaultStaticDir)
+	return buildRouterWithMetrics(core.NewMetrics(), config.DefaultStaticDir, defaultMonitorConfig(), nil, time.Now())
 }
 
-func buildRouterWithMetrics(metrics *core.Metrics, staticDir string) *core.Router {
+func buildRouterWithMetrics(metrics *core.Metrics, staticDir string, cfg config.Config, jobs <-chan pool.Job, startedAt time.Time) *core.Router {
 	router := core.NewRouter()
 
 	router.Handle("/", func(w *core.ResponseWriter, req *mtwshttp.Request) {
 		if !requireMethod(w, req, "GET") {
 			return
 		}
-		body := "MTWS baseline server is running\n"
-		if err := w.WriteText(core.StatusOK, body); err != nil {
-			log.Println("Write error:", err)
+		serveIndexPage(w, staticDir)
+	})
+
+	router.Handle("/api/monitor", func(w *core.ResponseWriter, req *mtwshttp.Request) {
+		if !requireMethod(w, req, "GET") {
+			return
 		}
+		payload := buildMonitorPayload(cfg, metrics, jobs, startedAt)
+		writeJSON(w, core.StatusOK, payload)
+	})
+
+	router.Handle("/api/logs", func(w *core.ResponseWriter, req *mtwshttp.Request) {
+		if !requireMethod(w, req, "GET") {
+			return
+		}
+		limit := logLimit(req.Path(), 60)
+		writeJSON(w, core.StatusOK, map[string]any{"logs": core.RecentLogs(limit)})
 	})
 
 	router.Handle("/health", func(w *core.ResponseWriter, req *mtwshttp.Request) {
@@ -288,6 +307,143 @@ func buildRouterWithMetrics(metrics *core.Metrics, staticDir string) *core.Route
 	router.HandlePrefix("/static/", secureStaticHandler(staticDir))
 
 	return router
+}
+
+func installLogging() {
+	log.SetFlags(log.LstdFlags | log.Lmicroseconds)
+	log.SetOutput(io.MultiWriter(os.Stdout, core.NewLogWriter()))
+}
+
+func defaultMonitorConfig() config.Config {
+	return config.Config{
+		ServerAddress:     config.ServerAddress,
+		WorkerPoolSize:    config.WorkerPoolSize,
+		JobQueueSize:      config.JobQueueSize,
+		ReadTimeout:       config.DefaultReadTimeout,
+		WriteTimeout:      config.DefaultWriteTimeout,
+		IdleTimeout:       config.DefaultIdleTimeout,
+		ShutdownTimeout:   config.DefaultShutdownTimeout,
+		QueueTimeout:      config.DefaultQueueTimeout,
+		MaxKeepAlive:      config.DefaultMaxKeepAlive,
+		StaticDir:         config.DefaultStaticDir,
+		RateLimitEnabled:  true,
+		RateLimitRate:     config.DefaultRateLimitRate,
+		RateLimitCapacity: config.DefaultRateLimitCapacity,
+	}
+}
+
+func serveIndexPage(w *core.ResponseWriter, staticDir string) {
+	root, err := resolveStaticRoot(staticDir)
+	if err != nil {
+		log.Printf("Static root error: %v", err)
+		_ = w.WriteText(core.StatusInternalServerError, "")
+		return
+	}
+
+	body, err := os.ReadFile(filepath.Join(root, "index.html"))
+	if err != nil {
+		if os.IsNotExist(err) {
+			_ = w.WriteText(core.StatusNotFound, "")
+			return
+		}
+		log.Printf("Static index read error: %v", err)
+		_ = w.WriteText(core.StatusInternalServerError, "")
+		return
+	}
+
+	if err := w.WriteBytes(core.StatusOK, "text/html; charset=utf-8", body); err != nil {
+		log.Println("Write error:", err)
+	}
+}
+
+func buildMonitorPayload(cfg config.Config, metrics *core.Metrics, jobs <-chan pool.Job, startedAt time.Time) map[string]any {
+	snapshot := metrics.Snapshot()
+	queueDepth := 0
+	queueCapacity := 0
+	if jobs != nil {
+		queueDepth = len(jobs)
+		queueCapacity = cap(jobs)
+	}
+
+	var runtimeStats runtime.MemStats
+	runtime.ReadMemStats(&runtimeStats)
+
+	return map[string]any{
+		"generated_at":   time.Now().UTC().Format(time.RFC3339Nano),
+		"uptime_seconds": time.Since(startedAt).Seconds(),
+		"server": map[string]any{
+			"address":             cfg.ServerAddress,
+			"static_dir":          cfg.StaticDir,
+			"tls_enabled":         cfg.TLSEnabled(),
+			"rate_limit_enabled":  cfg.RateLimitEnabled,
+			"rate_limit_rate":     cfg.RateLimitRate,
+			"rate_limit_capacity": cfg.RateLimitCapacity,
+			"worker_pool_size":    cfg.WorkerPoolSize,
+			"queue_capacity":      queueCapacity,
+			"queue_depth":         queueDepth,
+			"queue_utilization":   queueUtilization(queueDepth, queueCapacity),
+			"read_timeout_ms":     cfg.ReadTimeout.Milliseconds(),
+			"write_timeout_ms":    cfg.WriteTimeout.Milliseconds(),
+			"idle_timeout_ms":     cfg.IdleTimeout.Milliseconds(),
+			"queue_timeout_ms":    cfg.QueueTimeout.Milliseconds(),
+			"shutdown_timeout_ms": cfg.ShutdownTimeout.Milliseconds(),
+		},
+		"metrics": snapshot,
+		"runtime": map[string]any{
+			"goroutines":       runtime.NumGoroutine(),
+			"heap_alloc_mb":    float64(runtimeStats.Alloc) / 1024 / 1024,
+			"heap_sys_mb":      float64(runtimeStats.Sys) / 1024 / 1024,
+			"heap_idle_mb":     float64(runtimeStats.HeapIdle) / 1024 / 1024,
+			"heap_inuse_mb":    float64(runtimeStats.HeapInuse) / 1024 / 1024,
+			"last_gc_unix_sec": runtimeStats.LastGC / 1e9,
+			"num_gc":           runtimeStats.NumGC,
+		},
+	}
+}
+
+func queueUtilization(depth int, capacity int) float64 {
+	if capacity <= 0 {
+		return 0
+	}
+	return float64(depth) / float64(capacity)
+}
+
+func logLimit(path string, fallback int) int {
+	_, query, ok := strings.Cut(path, "?")
+	if !ok {
+		return fallback
+	}
+
+	values, err := url.ParseQuery(query)
+	if err != nil {
+		return fallback
+	}
+
+	raw := strings.TrimSpace(values.Get("limit"))
+	if raw == "" {
+		return fallback
+	}
+
+	limit, err := strconv.Atoi(raw)
+	if err != nil || limit <= 0 {
+		return fallback
+	}
+	if limit > 200 {
+		return 200
+	}
+	return limit
+}
+
+func writeJSON(w *core.ResponseWriter, status core.StatusCode, payload any) {
+	data, err := json.Marshal(payload)
+	if err != nil {
+		log.Printf("JSON marshal error: %v", err)
+		_ = w.WriteText(core.StatusInternalServerError, "")
+		return
+	}
+	if err := w.WriteBytes(status, "application/json; charset=utf-8", data); err != nil {
+		log.Println("Write error:", err)
+	}
 }
 
 func requireMethod(w *core.ResponseWriter, req *mtwshttp.Request, method string) bool {
